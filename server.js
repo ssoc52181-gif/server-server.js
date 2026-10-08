@@ -6,7 +6,8 @@ const fs = require("fs");
 const bcrypt = require("bcryptjs");
 
 const app = express();
-const PORT = 3000;
+
+const PORT = process.env.PORT || 3000;
 
 // ==========================================
 // НАСТРОЙКИ
@@ -14,14 +15,13 @@ const PORT = 3000;
 
 app.use(express.json());
 
-app.use(
-    express.static(
-        path.join(__dirname, "..")
-    )
-);
+// ВАЖНО:
+// index.html, script.js и style.css
+// находятся в той же папке, что и server.js
+app.use(express.static(__dirname));
 
 // ==========================================
-// ФАЙЛ ПОЛЬЗОВАТЕЛЕЙ
+// ПОЛЬЗОВАТЕЛИ
 // ==========================================
 
 const usersFile = path.join(
@@ -65,6 +65,21 @@ function saveUsers(users) {
 }
 
 // ==========================================
+// ГЛАВНАЯ СТРАНИЦА
+// ==========================================
+
+app.get("/", (req, res) => {
+
+    res.sendFile(
+        path.join(
+            __dirname,
+            "index.html"
+        )
+    );
+
+});
+
+// ==========================================
 // ПРОВЕРКА СЕРВЕРА
 // ==========================================
 
@@ -85,9 +100,11 @@ app.post("/api/register", async (req, res) => {
 
     try {
 
-        const { username, password } = req.body;
+        const {
+            username,
+            password
+        } = req.body;
 
-        // Проверка имени
         if (
             !username ||
             !username.trim()
@@ -104,7 +121,6 @@ app.post("/api/register", async (req, res) => {
         const cleanUsername =
             username.trim();
 
-        // Проверка длины имени
         if (
             cleanUsername.length < 3
         ) {
@@ -129,7 +145,6 @@ app.post("/api/register", async (req, res) => {
 
         }
 
-        // Разрешаем буквы, цифры и _
         if (
             !/^[a-zA-Zа-яА-ЯёЁ0-9_]+$/.test(
                 cleanUsername
@@ -144,7 +159,6 @@ app.post("/api/register", async (req, res) => {
 
         }
 
-        // Проверка пароля
         if (
             !password ||
             password.length < 6
@@ -158,10 +172,9 @@ app.post("/api/register", async (req, res) => {
 
         }
 
-        // Загружаем пользователей
-        const users = loadUsers();
+        const users =
+            loadUsers();
 
-        // Проверяем существование
         const existingUser =
             users.find(
                 user =>
@@ -179,14 +192,12 @@ app.post("/api/register", async (req, res) => {
 
         }
 
-        // Хешируем пароль
         const passwordHash =
             await bcrypt.hash(
                 password,
                 10
             );
 
-        // Создаём пользователя
         const newUser = {
 
             id:
@@ -203,9 +214,13 @@ app.post("/api/register", async (req, res) => {
 
         };
 
-        users.push(newUser);
+        users.push(
+            newUser
+        );
 
-        saveUsers(users);
+        saveUsers(
+            users
+        );
 
         console.log(
             `Новый пользователь: ${cleanUsername}`
@@ -373,30 +388,19 @@ app.listen(
     () => {
 
         console.log("");
-
         console.log(
             "================================="
         );
-
         console.log(
             "      LEOMAIL SERVER 🦁"
         );
-
         console.log(
             "================================="
         );
-
         console.log("");
-
         console.log(
-            `Сайт: http://localhost:${PORT}`
+            `Порт: ${PORT}`
         );
-
-        console.log(
-            `API: http://localhost:${PORT}/api/status`
-        );
-
         console.log("");
-
     }
 );

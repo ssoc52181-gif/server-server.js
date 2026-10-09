@@ -3,38 +3,201 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Leomail</title>
-    <link rel="stylesheet" href="style.css">
+    <meta name="theme-color" content="#ff5a1f">
+    <title>Leomail — сообщество</title>
+    <link rel="stylesheet" href="/style.css">
 </head>
-
 <body>
 
-    <header>
-        <h1>Leomail</h1>
+<header class="topbar">
+    <a href="/" class="logo" id="homeLogo">
+        <span class="logo-icon">🦁</span>
+        <span>Leomail</span>
+    </a>
 
-        <input type="text" placeholder="🔎 Поиск">
+    <label class="search">
+        <span>🔎</span>
+        <input id="searchInput" type="search" placeholder="Поиск постов и сообществ...">
+    </label>
 
-        <button>Войти</button>
-    </header>
+    <button class="login-btn" id="loginBtn">Войти</button>
+</header>
 
-    <main>
-        <h2>🔥 Популярное</h2>
+<div class="layout">
 
-        <div class="post">
-            <h3>Какой ваш любимый Minecraft мод?</h3>
-            <p>👤 Alex</p>
-            <p>👍 125 &nbsp;&nbsp; 💬 34</p>
-        </div>
+    <aside class="sidebar">
+        <button class="side-item active" id="homeMenu">🏠 Главная</button>
+        <button class="side-item" id="hotMenu">🔥 Популярное</button>
+        <button class="side-item" id="newMenu">🆕 Новое</button>
 
-        <div class="post">
-            <h3>Что посмотреть сегодня?</h3>
-            <p>👤 Max</p>
-            <p>👍 87 &nbsp;&nbsp; 💬 12</p>
-        </div>
+        <div class="sidebar-title">СООБЩЕСТВА</div>
 
-        <button class="create">➕ Создать пост</button>
+        <button class="side-item" data-community="Leomail"
+            onclick="openCommunity('Leomail')">🟠 r/Leomail</button>
+        <button class="side-item" data-community="Technology"
+            onclick="openCommunity('Technology')">💻 r/Technology</button>
+        <button class="side-item" data-community="Games"
+            onclick="openCommunity('Games')">🎮 r/Games</button>
+        <button class="side-item" data-community="Funny"
+            onclick="openCommunity('Funny')">😂 r/Funny</button>
+
+        <button class="create-community" id="communityBtn">＋ Создать сообщество</button>
+        <button class="side-item profile-menu" id="profileMenu">👤 Мой профиль</button>
+    </aside>
+
+    <main class="content">
+        <section id="homePage">
+            <div class="page-heading">
+                <div>
+                    <h1>Добро пожаловать в Leomail 🦁</h1>
+                    <p>Общайся, делись идеями и находи единомышленников.</p>
+                </div>
+                <button class="new-post" id="newPostBtn">＋ Создать пост</button>
+            </div>
+
+            <div class="sort-bar">
+                <button class="sort active" data-sort="hot">🔥 Популярное</button>
+                <button class="sort" data-sort="new">🆕 Новое</button>
+                <button class="sort" data-sort="top">⬆ Лучшее</button>
+            </div>
+
+            <div id="posts"></div>
+        </section>
+
+        <section id="profilePage" class="profile-page">
+            <div class="profile-cover"></div>
+
+            <div class="profile-main">
+                <div class="profile-avatar" id="profileAvatar">🦁</div>
+                <div class="profile-info">
+                    <h1 id="profileName">Guest</h1>
+                    <p id="profileUsername">u/Guest</p>
+                    <p id="profileBio">Новый пользователь Leomail 🦁</p>
+                </div>
+                <button class="edit-profile" id="editProfileBtn">✏️ Изменить профиль</button>
+            </div>
+
+            <div class="profile-stats">
+                <div><strong id="profileKarma">0</strong><span>Карма</span></div>
+                <div><strong id="profilePosts">0</strong><span>Посты</span></div>
+                <div><strong id="profileComments">0</strong><span>Комментарии</span></div>
+            </div>
+
+            <div class="profile-content">
+                <h2>Мои публикации</h2>
+                <div id="profilePostsList"></div>
+            </div>
+        </section>
     </main>
 
-    <script src="script.js"></script>
+    <aside class="rightbar">
+        <div class="community-card">
+            <div class="community-cover"></div>
+            <div class="community-content">
+                <div class="big-logo">🦁</div>
+                <h2>r/Leomail</h2>
+                <p>Главное сообщество Leomail. Общайтесь, публикуйте посты и находите новых людей.</p>
+
+                <div class="members">
+                    <strong id="memberCount">1 248</strong>
+                    <span>участников</span>
+                </div>
+
+                <button class="join-btn" id="joinBtn">Присоединиться</button>
+            </div>
+        </div>
+
+        <div class="rules">
+            <h3>📌 Правила сообщества</h3>
+            <ol>
+                <li>Уважайте других пользователей.</li>
+                <li>Не публикуйте спам.</li>
+                <li>Будьте дружелюбны.</li>
+                <li>Публикуйте материалы по теме.</li>
+            </ol>
+        </div>
+    </aside>
+
+</div>
+
+<!-- Окно создания поста -->
+<div class="modal" id="postModal">
+    <div class="modal-box">
+        <div class="modal-header">
+            <h2>Создать публикацию</h2>
+            <button class="close" id="closeModal" aria-label="Закрыть">×</button>
+        </div>
+
+        <input class="modal-input" id="postTitle" maxlength="200"
+            placeholder="Заголовок поста">
+
+        <textarea class="modal-textarea" id="postText" maxlength="10000"
+            placeholder="Чем хочешь поделиться?"></textarea>
+
+        <div class="modal-bottom">
+            <span>🟠 r/Leomail</span>
+            <button class="publish" id="publishBtn">Опубликовать</button>
+        </div>
+    </div>
+</div>
+
+<!-- Вход и регистрация -->
+<div class="modal" id="loginModal">
+    <div class="modal-box small">
+        <div class="modal-header">
+            <h2 id="authTitle">Войти в Leomail</h2>
+            <button class="close" id="closeLogin" aria-label="Закрыть">×</button>
+        </div>
+
+        <label class="field-label" for="username">Имя пользователя</label>
+        <input class="modal-input" id="username" maxlength="30"
+            autocomplete="username" placeholder="Твоё имя">
+
+        <label class="field-label" for="password">Пароль</label>
+        <input class="modal-input" id="password" type="password"
+            autocomplete="current-password" placeholder="Пароль">
+
+        <button class="publish full" id="doLogin">Войти</button>
+        <button class="post-action" id="switchAuth" style="width:100%">
+            Нет аккаунта? Зарегистрироваться
+        </button>
+
+        <p class="login-info" id="authInfo">
+            Войди или создай аккаунт Leomail.
+        </p>
+    </div>
+</div>
+
+<!-- Редактирование профиля -->
+<div class="modal" id="profileModal">
+    <div class="modal-box small">
+        <div class="modal-header">
+            <h2>Редактировать профиль</h2>
+            <button class="close" id="closeProfileModal" aria-label="Закрыть">×</button>
+        </div>
+
+        <label class="field-label" for="editName">Имя пользователя</label>
+        <input class="modal-input" id="editName" maxlength="30"
+            placeholder="Имя">
+
+        <label class="field-label" for="editBio">О себе</label>
+        <textarea class="modal-textarea" id="editBio" maxlength="300"
+            placeholder="Расскажи о себе"></textarea>
+
+        <label class="field-label">Выбери аватар</label>
+        <div class="avatar-picker" id="avatarPicker">
+            <button type="button" data-avatar="🦁">🦁</button>
+            <button type="button" data-avatar="🐱">🐱</button>
+            <button type="button" data-avatar="🐼">🐼</button>
+            <button type="button" data-avatar="🦊">🦊</button>
+            <button type="button" data-avatar="🐸">🐸</button>
+            <button type="button" data-avatar="🐯">🐯</button>
+        </div>
+
+        <button class="publish full" id="saveProfileBtn">Сохранить профиль</button>
+    </div>
+</div>
+
+<script src="/script.js" defer></script>
 </body>
 </html>

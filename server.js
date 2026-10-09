@@ -6,62 +6,57 @@ const fs = require("fs");
 const bcrypt = require("bcryptjs");
 
 const app = express();
-
 const PORT = process.env.PORT || 3000;
 
-// ==========================================
-// НАСТРОЙКИ
-// ==========================================
-
-app.use(express.json());
-
-// ВАЖНО:
-// index.html, script.js и style.css
-// находятся в той же папке, что и server.js
+app.use(express.json({ limit: "20kb" }));
 app.use(express.static(__dirname));
 
 // ==========================================
-// ПОЛЬЗОВАТЕЛИ
+// ФАЙЛЫ ДАННЫХ
 // ==========================================
 
-const usersFile = path.join(
-    __dirname,
-    "users.json"
-);
+const usersFile = path.join(__dirname, "users.json");
+const messagesFile = path.join(__dirname, "messages.json");
 
-function loadUsers() {
+function readJSON(file, fallback = []) {
     try {
-        if (!fs.existsSync(usersFile)) {
+        if (!fs.existsSync(file)) {
             fs.writeFileSync(
-                usersFile,
-                "[]",
+                file,
+                JSON.stringify(fallback, null, 2),
                 "utf8"
             );
         }
 
-        const data = fs.readFileSync(
-            usersFile,
-            "utf8"
-        );
-
-        return JSON.parse(data);
-
+        return JSON.parse(fs.readFileSync(file, "utf8"));
     } catch (error) {
-        console.error(
-            "Ошибка загрузки пользователей:",
-            error
-        );
-
-        return [];
+        console.error("Ошибка чтения файла:", file, error);
+        return fallback;
     }
 }
 
-function saveUsers(users) {
+function writeJSON(file, data) {
     fs.writeFileSync(
-        usersFile,
-        JSON.stringify(users, null, 2),
+        file,
+        JSON.stringify(data, null, 2),
         "utf8"
     );
+}
+
+function loadUsers() {
+    return readJSON(usersFile);
+}
+
+function saveUsers(users) {
+    writeJSON(usersFile, users);
+}
+
+function loadMessages() {
+    return readJSON(messagesFile);
+}
+
+function saveMessages(messages) {
+    writeJSON(messagesFile, messages);
 }
 
 // ==========================================
@@ -69,27 +64,18 @@ function saveUsers(users) {
 // ==========================================
 
 app.get("/", (req, res) => {
-
-    res.sendFile(
-        path.join(
-            __dirname,
-            "index.html"
-        )
-    );
-
+    res.sendFile(path.join(__dirname, "index.html"));
 });
 
 // ==========================================
-// ПРОВЕРКА СЕРВЕРА
+// СТАТУС СЕРВЕРА
 // ==========================================
 
 app.get("/api/status", (req, res) => {
-
     res.json({
         success: true,
         message: "Leomail server работает! 🦁"
     });
-
 });
 
 // ==========================================
@@ -97,172 +83,88 @@ app.get("/api/status", (req, res) => {
 // ==========================================
 
 app.post("/api/register", async (req, res) => {
-
     try {
-
-        const {
-            username,
-            password
-        } = req.body;
+        const { username, password } = req.body || {};
 
         if (
-            !username ||
-            !username.trim()
+            typeof username !== "string" ||
+            typeof password !== "string"
         ) {
-
             return res.status(400).json({
                 success: false,
-                message:
-                    "Введите имя пользователя."
+                message: "Введите имя пользователя и пароль."
             });
-
         }
 
-        const cleanUsername =
-            username.trim();
+        const cleanUsername = username.trim();
 
-        if (
-            cleanUsername.length < 3
-        ) {
-
+        if (cleanUsername.length < 3 || cleanUsername.length > 30) {
             return res.status(400).json({
                 success: false,
-                message:
-                    "Имя пользователя должно содержать минимум 3 символа."
+                message: "Имя должно содержать от 3 до 30 символов."
             });
-
         }
 
-        if (
-            cleanUsername.length > 30
-        ) {
-
+        if (!/^[a-zA-Zа-яА-ЯёЁ0-9_]+$/.test(cleanUsername)) {
             return res.status(400).json({
                 success: false,
-                message:
-                    "Имя пользователя слишком длинное."
+                message: "Имя может содержать только буквы, цифры и _."
             });
-
         }
 
-        if (
-            !/^[a-zA-Zа-яА-ЯёЁ0-9_]+$/.test(
-                cleanUsername
-            )
-        ) {
-
+        if (password.length < 6 || password.length > 200) {
             return res.status(400).json({
                 success: false,
-                message:
-                    "Имя может содержать только буквы, цифры и _."
+                message: "Пароль должен содержать от 6 до 200 символов."
             });
-
         }
 
-        if (
-            !password ||
-            password.length < 6
-        ) {
+        const users = loadUsers();
 
-            return res.status(400).json({
-                success: false,
-                message:
-                    "Пароль должен содержать минимум 6 символов."
-            });
-
-        }
-
-        const users =
-            loadUsers();
-
-        const existingUser =
-            users.find(
-                user =>
-                    user.username.toLowerCase() ===
-                    cleanUsername.toLowerCase()
-            );
+        const existingUser = users.find(
+            user =>
+                user.username.toLowerCase() ===
+                cleanUsername.toLowerCase()
+        );
 
         if (existingUser) {
-
             return res.status(409).json({
                 success: false,
-                message:
-                    "Такой пользователь уже существует."
+                message: "Такой пользователь уже существует."
             });
-
         }
 
-        const passwordHash =
-            await bcrypt.hash(
-                password,
-                10
-            );
+        const passwordHash = await bcrypt.hash(password, 10);
 
         const newUser = {
-
-            id:
-                Date.now(),
-
-            username:
-                cleanUsername,
-
-            passwordHash:
-                passwordHash,
-
-            createdAt:
-                Date.now()
-
+            id: Date.now().toString() + "-" +
+                Math.random().toString(36).slice(2, 8),
+            username: cleanUsername,
+            passwordHash,
+            createdAt: new Date().toISOString()
         };
 
-        users.push(
-            newUser
-        );
+        users.push(newUser);
+        saveUsers(users);
 
-        saveUsers(
-            users
-        );
-
-        console.log(
-            `Новый пользователь: ${cleanUsername}`
-        );
+        console.log("Новый пользователь:", cleanUsername);
 
         return res.status(201).json({
-
             success: true,
-
-            message:
-                "Регистрация успешна! 🦁",
-
+            message: "Регистрация успешна! 🦁",
             user: {
-
-                id:
-                    newUser.id,
-
-                username:
-                    newUser.username
-
+                id: newUser.id,
+                username: newUser.username
             }
-
         });
-
     } catch (error) {
-
-        console.error(
-            "Ошибка регистрации:",
-            error
-        );
+        console.error("Ошибка регистрации:", error);
 
         return res.status(500).json({
-
             success: false,
-
-            message:
-                "Ошибка сервера."
-
+            message: "Ошибка сервера."
         });
-
     }
-
 });
 
 // ==========================================
@@ -270,137 +172,169 @@ app.post("/api/register", async (req, res) => {
 // ==========================================
 
 app.post("/api/login", async (req, res) => {
-
     try {
-
-        const {
-            username,
-            password
-        } = req.body;
+        const { username, password } = req.body || {};
 
         if (
-            !username ||
+            typeof username !== "string" ||
+            typeof password !== "string" ||
+            !username.trim() ||
             !password
         ) {
-
             return res.status(400).json({
-
                 success: false,
-
-                message:
-                    "Введите имя пользователя и пароль."
-
+                message: "Введите имя пользователя и пароль."
             });
-
         }
 
-        const users =
-            loadUsers();
+        const users = loadUsers();
 
-        const user =
-            users.find(
-                item =>
-                    item.username.toLowerCase() ===
-                    username.trim().toLowerCase()
-            );
+        const user = users.find(
+            item =>
+                item.username.toLowerCase() ===
+                username.trim().toLowerCase()
+        );
 
         if (!user) {
-
             return res.status(401).json({
-
                 success: false,
-
-                message:
-                    "Неверное имя пользователя или пароль."
-
+                message: "Неверное имя пользователя или пароль."
             });
-
         }
 
-        const passwordCorrect =
-            await bcrypt.compare(
-                password,
-                user.passwordHash
-            );
+        const passwordCorrect = await bcrypt.compare(
+            password,
+            user.passwordHash
+        );
 
         if (!passwordCorrect) {
-
             return res.status(401).json({
-
                 success: false,
-
-                message:
-                    "Неверное имя пользователя или пароль."
-
+                message: "Неверное имя пользователя или пароль."
             });
-
         }
 
-        console.log(
-            `Вход пользователя: ${user.username}`
-        );
+        console.log("Вход пользователя:", user.username);
 
         return res.json({
-
             success: true,
-
-            message:
-                "Вход выполнен! 🦁",
-
+            message: "Вход выполнен! 🦁",
             user: {
-
-                id:
-                    user.id,
-
-                username:
-                    user.username
-
+                id: user.id,
+                username: user.username
             }
-
         });
-
     } catch (error) {
-
-        console.error(
-            "Ошибка входа:",
-            error
-        );
+        console.error("Ошибка входа:", error);
 
         return res.status(500).json({
-
             success: false,
-
-            message:
-                "Ошибка сервера."
-
+            message: "Ошибка сервера."
         });
-
     }
-
 });
 
 // ==========================================
-// ЗАПУСК
+// ПОЛУЧЕНИЕ ОБЩИХ СООБЩЕНИЙ
 // ==========================================
 
-app.listen(
-    PORT,
-    () => {
+app.get("/api/messages", (req, res) => {
+    try {
+        const messages = loadMessages();
 
-        console.log("");
-        console.log(
-            "================================="
-        );
-        console.log(
-            "      LEOMAIL SERVER 🦁"
-        );
-        console.log(
-            "================================="
-        );
-        console.log("");
-        console.log(
-            `Порт: ${PORT}`
-        );
-        console.log("");
+        res.set("Cache-Control", "no-store");
+
+        return res.json({
+            success: true,
+            messages: messages.slice(-500)
+        });
+    } catch (error) {
+        console.error("Ошибка загрузки сообщений:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Не удалось загрузить сообщения."
+        });
     }
-);
+});
+
+// ==========================================
+// ОТПРАВКА ОБЩЕГО СООБЩЕНИЯ
+// ==========================================
+
+app.post("/api/messages", (req, res) => {
+    try {
+        const { username, text } = req.body || {};
+
+        if (
+            typeof username !== "string" ||
+            typeof text !== "string"
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: "Укажите имя и текст сообщения."
+            });
+        }
+
+        const cleanUsername = username.trim();
+        const cleanText = text.trim();
+
+        if (!cleanUsername || cleanUsername.length > 30) {
+            return res.status(400).json({
+                success: false,
+                message: "Некорректное имя пользователя."
+            });
+        }
+
+        if (!cleanText || cleanText.length > 2000) {
+            return res.status(400).json({
+                success: false,
+                message: "Сообщение должно содержать от 1 до 2000 символов."
+            });
+        }
+
+        const messages = loadMessages();
+
+        const message = {
+            id: Date.now().toString() + "-" +
+                Math.random().toString(36).slice(2, 10),
+            username: cleanUsername,
+            text: cleanText,
+            createdAt: new Date().toISOString()
+        };
+
+        messages.push(message);
+
+        if (messages.length > 5000) {
+            messages.splice(0, messages.length - 5000);
+        }
+
+        saveMessages(messages);
+
+        return res.status(201).json({
+            success: true,
+            message
+        });
+    } catch (error) {
+        console.error("Ошибка отправки сообщения:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Не удалось сохранить сообщение."
+        });
+    }
+});
+
+// ==========================================
+// ЗАПУСК СЕРВЕРА
+// ==========================================
+
+app.listen(PORT, () => {
+    console.log("");
+    console.log("=================================");
+    console.log("       LEOMAIL SERVER 🦁");
+    console.log("=================================");
+    console.log("Порт:", PORT);
+    console.log("Сервер запущен!");
+    console.log("");
+});

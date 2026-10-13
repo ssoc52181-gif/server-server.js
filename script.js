@@ -1,7 +1,7 @@
 "use strict";
 
 // =====================================================
-// LEOMAIL — ОСНОВНОЙ SCRIPT (работает через сервер)
+// LEOMAIL — ОСНОВНОЙ SCRIPT (сервер + картинки + чат)
 // =====================================================
 
 const postsContainer = document.getElementById("posts");
@@ -11,6 +11,7 @@ const profilePage = document.getElementById("profilePage");
 const postModal = document.getElementById("postModal");
 const loginModal = document.getElementById("loginModal");
 const profileModal = document.getElementById("profileModal");
+const chatModal = document.getElementById("chatModal");
 const newPostBtn = document.getElementById("newPostBtn");
 const closeModal = document.getElementById("closeModal");
 const loginBtn = document.getElementById("loginBtn");
@@ -29,6 +30,17 @@ const newMenu = document.getElementById("newMenu");
 const profileMenu = document.getElementById("profileMenu");
 const homeLogo = document.getElementById("homeLogo");
 
+const postImageInput = document.getElementById("postImage");
+const imagePreviewBox = document.getElementById("imagePreviewBox");
+const imagePreview = document.getElementById("imagePreview");
+const removeImageBtn = document.getElementById("removeImage");
+
+const chatFab = document.getElementById("chatFab");
+const closeChat = document.getElementById("closeChat");
+const chatMessages = document.getElementById("chatMessages");
+const chatInput = document.getElementById("chatInput");
+const chatSend = document.getElementById("chatSend");
+
 // =====================================================
 // ДАННЫЕ
 // =====================================================
@@ -46,11 +58,16 @@ let postsLoaded = false;
 let loadError = false;
 let lastSignature = "";
 
+let pendingImage = null;
+let chatLastId = 0;
+let chatLoaded = false;
+
 const openComments = new Set();
 const commentDrafts = {};
 
 const POLL_INTERVAL = 4000;
 const COMMUNITY_POLL_INTERVAL = 15000;
+const CHAT_POLL_INTERVAL = 3000;
 
 // =====================================================
 // ЗАПРОСЫ К СЕРВЕРУ
@@ -58,11 +75,20 @@ const COMMUNITY_POLL_INTERVAL = 15000;
 
 async function api(path, options = {}) {
     try {
+        const headers = {};
+
+        if (options.body) {
+            headers["Content-Type"] = "application/json";
+        }
+
+        const token = localStorage.getItem("leomail_token");
+        if (token) {
+            headers["Authorization"] = "Bearer " + token;
+        }
+
         const response = await fetch(path, {
             method: options.method || "GET",
-            headers: options.body
-                ? { "Content-Type": "application/json" }
-                : undefined,
+            headers: headers,
             body: options.body ? JSON.stringify(options.body) : undefined,
             cache: "no-store"
         });
@@ -76,6 +102,7 @@ async function api(path, options = {}) {
 
         return {
             ok: response.ok && data.success !== false,
+            status: response.status,
             data: data
         };
     } catch (error) {
@@ -83,6 +110,7 @@ async function api(path, options = {}) {
         return {
             ok: false,
             network: true,
+            status: 0,
             data: { message: "Не удалось подключиться к серверу." }
         };
     }
@@ -100,16 +128,44 @@ function getCurrentUsername() {
     return getCurrentUser() || "Guest";
 }
 
+function isMine(name) {
+    const user = getCurrentUser();
+    return !!user && String(name).toLowerCase() === user.toLowerCase();
+}
+
+function clearAuth() {
+    localStorage.removeItem("leomail_user");
+    localStorage.removeItem("leomail_token");
+    localStorage.removeItem("leomail_profile");
+}
+
 function requireLogin() {
     const user = getCurrentUser();
+    const token = localStorage.getItem("leomail_token");
 
-    if (!user) {
-        alert("Сначала войдите в аккаунт или зарегистрируйтесь.");
+    if (!user || !token) {
+        if (user) {
+            clearAuth();
+            updateLoginButton();
+            loadUserVotes();
+            renderPosts();
+        }
+
+        alert("Войдите в аккаунт, чтобы продолжить.");
         openLogin();
         return null;
     }
 
     return user;
+}
+
+function sessionExpired() {
+    clearAuth();
+    updateLoginButton();
+    loadUserVotes();
+    renderPosts();
+    alert("Сессия устарела. Войдите в аккаунт заново.");
+    openLogin();
 }
 
 function votesKey() {
@@ -218,6 +274,15 @@ function getTimeText(timestamp) {
     return days + " дн. назад";
 }
 
+function getClockText(timestamp) {
+    const date = new Date(timestamp);
+    return (
+        String(date.getHours()).padStart(2, "0") +
+        ":" +
+        String(date.getMinutes()).padStart(2, "0")
+    );
+}
+
 // =====================================================
 // СТРАНИЦЫ
 // =====================================================
@@ -255,6 +320,7 @@ async function loadPosts() {
         text: post.text,
         author: post.author,
         community: post.community,
+        hasImage: !!post.hasImage,
         votes: Number(post.votes) || 0,
         createdAt: Number(post.createdAt) || Date.now(),
         comments: (post.comments || []).map(comment => ({
@@ -346,7 +412,6 @@ function getVisiblePosts() {
 function renderPosts() {
     if (!postsContainer) return;
 
-    // Запоминаем, где был пользователь, чтобы обновление не мешало
     const scrollY = window.scrollY;
     const active = document.activeElement;
     let focusId = null;
@@ -404,6 +469,17 @@ function renderPosts() {
         const id = escapeHTML(post.id);
         const draft = commentDrafts[post.id] || "";
 
+        const imageHTML = post.hasImage
+            ? `<img class="post-image" loading="lazy" alt=""
+                   src="/api/posts/${encodeURIComponent(post.id)}/image">`
+            : "";
+
+        const deleteHTML = isMine(post.author)
+            ? `<button class="post-action delete-post" data-id="${id}">
+                   🗑 Удалить
+               </button>`
+            : "";
+
         article.innerHTML = `
             <div class="vote">
                 <button class="upvote ${vote === 1 ? "voted" : ""}"
@@ -434,6 +510,8 @@ function renderPosts() {
 
                 <div class="post-text">${escapeHTML(post.text)}</div>
 
+                ${imageHTML}
+
                 <div class="post-actions">
                     <button class="post-action comment-btn" data-id="${id}">
                         💬 ${post.comments.length} комментариев
@@ -442,6 +520,8 @@ function renderPosts() {
                     <button class="post-action share-btn" data-id="${id}">
                         ↗ Поделиться
                     </button>
+
+                    ${deleteHTML}
                 </div>
 
                 <div class="comments ${openComments.has(post.id) ? "open" : ""}"
@@ -469,7 +549,6 @@ function renderPosts() {
 
     attachPostEvents();
 
-    // Возвращаем фокус и прокрутку
     if (focusId) {
         const input = document.querySelector(
             `.comment-input[data-id="${focusId}"]`
@@ -495,17 +574,30 @@ function renderComments(post) {
     }
 
     return post.comments
-        .map(comment => `
-            <div class="comment">
-                <div class="comment-user">
-                    u/${escapeHTML(comment.author)}
-                    <span style="color:#888;font-weight:normal">
-                        · ${getTimeText(comment.createdAt)}
-                    </span>
+        .map(comment => {
+            const canDelete =
+                isMine(comment.author) || isMine(post.author);
+
+            const deleteHTML = canDelete
+                ? `<button class="comment-delete"
+                        data-post="${escapeHTML(post.id)}"
+                        data-id="${escapeHTML(comment.id)}"
+                        title="Удалить комментарий">🗑</button>`
+                : "";
+
+            return `
+                <div class="comment">
+                    <div class="comment-user">
+                        u/${escapeHTML(comment.author)}
+                        <span style="color:#888;font-weight:normal">
+                            · ${getTimeText(comment.createdAt)}
+                        </span>
+                        ${deleteHTML}
+                    </div>
+                    <div class="comment-text">${escapeHTML(comment.text)}</div>
                 </div>
-                <div class="comment-text">${escapeHTML(comment.text)}</div>
-            </div>
-        `)
+            `;
+        })
         .join("");
 }
 
@@ -530,9 +622,14 @@ async function addComment(id) {
         "/api/posts/" + encodeURIComponent(id) + "/comments",
         {
             method: "POST",
-            body: { author: user, text: text }
+            body: { text: text }
         }
     );
+
+    if (res.status === 401) {
+        sessionExpired();
+        return;
+    }
 
     if (!res.ok) {
         alert(res.data.message || "Не удалось отправить комментарий.");
@@ -556,7 +653,73 @@ async function addComment(id) {
     lastSignature = JSON.stringify(posts);
     renderPosts();
 
-    // Сразу подтягиваем свежие данные с сервера
+    loadPosts();
+}
+
+async function deleteComment(postId, commentId) {
+    if (!requireLogin()) return;
+    if (!confirm("Удалить этот комментарий?")) return;
+
+    const res = await api(
+        "/api/posts/" + encodeURIComponent(postId) +
+        "/comments/" + encodeURIComponent(commentId),
+        { method: "DELETE" }
+    );
+
+    if (res.status === 401) {
+        sessionExpired();
+        return;
+    }
+
+    if (!res.ok) {
+        alert(res.data.message || "Не удалось удалить комментарий.");
+        return;
+    }
+
+    const post = posts.find(item => item.id === postId);
+
+    if (post) {
+        post.comments = post.comments.filter(
+            comment => comment.id !== commentId
+        );
+    }
+
+    lastSignature = JSON.stringify(posts);
+    renderPosts();
+    loadPosts();
+}
+
+// =====================================================
+// УДАЛЕНИЕ ПОСТА
+// =====================================================
+
+async function deletePost(id) {
+    if (!requireLogin()) return;
+    if (!confirm("Удалить этот пост?")) return;
+
+    const res = await api(
+        "/api/posts/" + encodeURIComponent(id),
+        { method: "DELETE" }
+    );
+
+    if (res.status === 401) {
+        sessionExpired();
+        return;
+    }
+
+    if (!res.ok) {
+        alert(res.data.message || "Не удалось удалить пост.");
+        return;
+    }
+
+    posts = posts.filter(post => post.id !== id);
+    lastSignature = JSON.stringify(posts);
+    renderPosts();
+
+    if (profilePage.classList.contains("show")) {
+        renderProfile();
+    }
+
     loadPosts();
 }
 
@@ -574,7 +737,6 @@ async function votePost(postId, newVote) {
     const current = userVotes[postId] || 0;
     const value = current === newVote ? 0 : newVote;
 
-    // Сразу показываем результат
     post.votes += value - current;
 
     if (value === 0) {
@@ -599,7 +761,6 @@ async function votePost(postId, newVote) {
         lastSignature = JSON.stringify(posts);
         renderPosts();
     } else {
-        // Откатываем
         post.votes -= value - current;
 
         if (current === 0) {
@@ -631,754 +792,12 @@ function attachPostEvents() {
         });
     });
 
-    document.querySelectorAll(".comment-btn").forEach(button => {
+    document.querySelectorAll(".delete-post").forEach(button => {
         button.addEventListener("click", () => {
-            const id = button.dataset.id;
-            const box = document.getElementById("comments-" + id);
-
-            if (box) {
-                box.classList.toggle("open");
-
-                if (box.classList.contains("open")) {
-                    openComments.add(id);
-                } else {
-                    openComments.delete(id);
-                }
-            }
+            deletePost(button.dataset.id);
         });
     });
 
-    document.querySelectorAll(".comment-submit").forEach(button => {
+    document.querySelectorAll(".comment-delete").forEach(button => {
         button.addEventListener("click", () => {
-            addComment(button.dataset.id);
-        });
-    });
-
-    document.querySelectorAll(".comment-input").forEach(input => {
-        input.addEventListener("input", () => {
-            commentDrafts[input.dataset.id] = input.value;
-        });
-
-        input.addEventListener("keydown", event => {
-            if (event.key === "Enter") {
-                event.preventDefault();
-                addComment(input.dataset.id);
-            }
-        });
-    });
-
-    document.querySelectorAll(".community-link").forEach(button => {
-        button.addEventListener("click", () => {
-            openCommunity(button.dataset.community);
-        });
-    });
-
-    document.querySelectorAll(".author-link").forEach(button => {
-        button.addEventListener("click", showProfile);
-    });
-
-    document.querySelectorAll(".share-btn").forEach(button => {
-        button.addEventListener("click", async () => {
-            const post = posts.find(item => item.id === button.dataset.id);
-            if (!post) return;
-
-            const text = post.title + "\n\n" + post.text;
-
-            try {
-                await navigator.clipboard.writeText(text);
-                button.textContent = "✓ Скопировано";
-
-                setTimeout(() => {
-                    button.textContent = "↗ Поделиться";
-                }, 1500);
-            } catch (e) {
-                alert("Не удалось скопировать текст.");
-            }
-        });
-    });
-}
-
-// =====================================================
-// СОЗДАНИЕ ПОСТА
-// =====================================================
-
-if (newPostBtn) {
-    newPostBtn.addEventListener("click", () => {
-        if (!requireLogin()) return;
-
-        postModal.classList.add("show");
-        updatePostCommunity();
-    });
-}
-
-if (closeModal) {
-    closeModal.addEventListener("click", () => {
-        postModal.classList.remove("show");
-    });
-}
-
-function updatePostCommunity() {
-    const communityText = document.querySelector(".modal-bottom span");
-    if (!communityText) return;
-
-    communityText.textContent = "🟠 r/" + (currentCommunity || "Leomail");
-}
-
-if (publishBtn) {
-    publishBtn.addEventListener("click", async () => {
-        const user = requireLogin();
-        if (!user) return;
-
-        const titleInput = document.getElementById("postTitle");
-        const textInput = document.getElementById("postText");
-
-        const title = titleInput.value.trim();
-        const text = textInput.value.trim();
-
-        if (!title) {
-            alert("Введите заголовок.");
-            return;
-        }
-
-        if (!text) {
-            alert("Напишите текст поста.");
-            return;
-        }
-
-        publishBtn.disabled = true;
-        publishBtn.textContent = "Публикация...";
-
-        const res = await api("/api/posts", {
-            method: "POST",
-            body: {
-                title: title,
-                text: text,
-                author: user,
-                community: currentCommunity || "Leomail"
-            }
-        });
-
-        publishBtn.disabled = false;
-        publishBtn.textContent = "Опубликовать";
-
-        if (!res.ok) {
-            alert(res.data.message || "Не удалось опубликовать пост.");
-            return;
-        }
-
-        titleInput.value = "";
-        textInput.value = "";
-        postModal.classList.remove("show");
-
-        currentSort = "new";
-        updateSortButtons();
-
-        await loadPosts();
-    });
-}
-
-// =====================================================
-// ПОИСК
-// =====================================================
-
-if (searchInput) {
-    searchInput.addEventListener("input", () => {
-        currentSearch = searchInput.value.trim();
-        renderPosts();
-    });
-}
-
-// =====================================================
-// СОРТИРОВКА
-// =====================================================
-
-document.querySelectorAll(".sort").forEach(button => {
-    button.addEventListener("click", () => {
-        currentSort = button.dataset.sort;
-        updateSortButtons();
-        renderPosts();
-    });
-});
-
-function updateSortButtons() {
-    document.querySelectorAll(".sort").forEach(button => {
-        button.classList.toggle(
-            "active",
-            button.dataset.sort === currentSort
-        );
-    });
-}
-
-// =====================================================
-// МЕНЮ
-// =====================================================
-
-if (homeMenu) {
-    homeMenu.addEventListener("click", () => {
-        currentCommunity = null;
-        currentSearch = "";
-
-        if (searchInput) searchInput.value = "";
-
-        updateCommunityCard();
-        showHome();
-    });
-}
-
-if (hotMenu) {
-    hotMenu.addEventListener("click", () => {
-        currentCommunity = null;
-        currentSort = "hot";
-        updateSortButtons();
-        updateCommunityCard();
-        showHome();
-    });
-}
-
-if (newMenu) {
-    newMenu.addEventListener("click", () => {
-        currentCommunity = null;
-        currentSort = "new";
-        updateSortButtons();
-        updateCommunityCard();
-        showHome();
-    });
-}
-
-if (profileMenu) {
-    profileMenu.addEventListener("click", showProfile);
-}
-
-if (homeLogo) {
-    homeLogo.addEventListener("click", event => {
-        event.preventDefault();
-        currentCommunity = null;
-        updateCommunityCard();
-        showHome();
-    });
-}
-
-// =====================================================
-// СООБЩЕСТВА
-// =====================================================
-
-function openCommunity(name) {
-    const community = communities.find(
-        item => item.name.toLowerCase() === String(name).toLowerCase()
-    );
-
-    currentCommunity = community ? community.name : name;
-
-    updateCommunityCard();
-    updatePostCommunity();
-    showHome();
-}
-
-function updateCommunityCard() {
-    const name = currentCommunity || "Leomail";
-    const community = communities.find(item => item.name === name);
-
-    if (!community) return;
-
-    const title = document.querySelector(".community-content h2");
-    const description = document.querySelector(".community-content p");
-
-    if (title) title.textContent = "r/" + community.name;
-    if (description) description.textContent = community.description;
-
-    if (memberCount) {
-        memberCount.textContent = community.members.toLocaleString("ru-RU");
-    }
-
-    if (joinBtn) {
-        joinBtn.textContent = community.joined
-            ? "✓ Вы участник"
-            : "Присоединиться";
-
-        joinBtn.classList.toggle("joined", community.joined);
-    }
-}
-
-if (joinBtn) {
-    joinBtn.addEventListener("click", async () => {
-        const user = requireLogin();
-        if (!user) return;
-
-        const name = currentCommunity || "Leomail";
-        const community = communities.find(item => item.name === name);
-
-        if (!community) return;
-
-        const willJoin = !community.joined;
-
-        const res = await api(
-            "/api/communities/" + encodeURIComponent(name) + "/join",
-            {
-                method: "POST",
-                body: { username: user, joined: willJoin }
-            }
-        );
-
-        if (!res.ok) {
-            alert(res.data.message || "Не удалось выполнить действие.");
-            return;
-        }
-
-        community.joined = willJoin;
-        community.members = Number(res.data.members) || 0;
-
-        if (willJoin) {
-            if (!joinedCommunities.includes(name)) {
-                joinedCommunities.push(name);
-            }
-        } else {
-            joinedCommunities = joinedCommunities.filter(
-                item => item !== name
-            );
-        }
-
-        saveJoined();
-        updateCommunityCard();
-    });
-}
-
-// =====================================================
-// СОЗДАНИЕ СООБЩЕСТВА
-// =====================================================
-
-if (communityBtn) {
-    communityBtn.addEventListener("click", async () => {
-        const user = requireLogin();
-        if (!user) return;
-
-        const name = prompt("Введите название сообщества:");
-        if (!name) return;
-
-        const cleanName = name
-            .trim()
-            .replace(/^r\//i, "")
-            .replace(/\s+/g, "");
-
-        if (cleanName.length < 3) {
-            alert("Название должно содержать минимум 3 символа.");
-            return;
-        }
-
-        const description =
-            prompt("Введите описание сообщества:") ||
-            "Новое сообщество Leomail.";
-
-        const res = await api("/api/communities", {
-            method: "POST",
-            body: {
-                name: cleanName,
-                description: description,
-                author: user
-            }
-        });
-
-        if (!res.ok) {
-            alert(res.data.message || "Не удалось создать сообщество.");
-            return;
-        }
-
-        const created = {
-            name: res.data.community.name,
-            description: res.data.community.description,
-            members: 1,
-            joined: true
-        };
-
-        communities.push(created);
-        joinedCommunities.push(created.name);
-        saveJoined();
-
-        addCommunityToSidebar(created);
-        openCommunity(created.name);
-
-        alert("Сообщество r/" + created.name + " создано!");
-    });
-}
-
-function addCommunityToSidebar(community) {
-    const sidebar = document.querySelector(".sidebar");
-    const createButton = document.getElementById("communityBtn");
-
-    if (!sidebar || !createButton) return;
-
-    const button = document.createElement("button");
-
-    button.className = "side-item";
-    button.dataset.community = community.name;
-    button.textContent = "🟠 r/" + community.name;
-
-    button.addEventListener("click", () => {
-        openCommunity(community.name);
-    });
-
-    sidebar.insertBefore(button, createButton);
-}
-
-function restoreCustomCommunities() {
-    const existing = new Set(
-        [...document.querySelectorAll(".sidebar [data-community]")].map(
-            button => button.dataset.community
-        )
-    );
-
-    communities.forEach(community => {
-        if (!existing.has(community.name)) {
-            addCommunityToSidebar(community);
-            existing.add(community.name);
-        }
-    });
-}
-
-// =====================================================
-// ПРОФИЛЬ
-// =====================================================
-
-function renderProfile() {
-    const profile = getProfile();
-
-    const profileAvatar = document.getElementById("profileAvatar");
-    const profileName = document.getElementById("profileName");
-    const profileUsername = document.getElementById("profileUsername");
-    const profileBio = document.getElementById("profileBio");
-
-    if (profileAvatar) profileAvatar.textContent = profile.avatar;
-    if (profileName) profileName.textContent = profile.name;
-    if (profileUsername) profileUsername.textContent = "u/" + profile.name;
-    if (profileBio) profileBio.textContent = profile.bio;
-
-    const nameLower = profile.name.toLowerCase();
-
-    const userPosts = posts.filter(
-        post => post.author.toLowerCase() === nameLower
-    );
-
-    const karma = userPosts.reduce((sum, post) => sum + post.votes, 0);
-
-    let commentsCount = 0;
-    posts.forEach(post => {
-        post.comments.forEach(comment => {
-            if (comment.author.toLowerCase() === nameLower) {
-                commentsCount++;
-            }
-        });
-    });
-
-    const profileKarma = document.getElementById("profileKarma");
-    const profilePosts = document.getElementById("profilePosts");
-    const profileComments = document.getElementById("profileComments");
-
-    if (profileKarma) profileKarma.textContent = karma;
-    if (profilePosts) profilePosts.textContent = userPosts.length;
-    if (profileComments) profileComments.textContent = commentsCount;
-
-    const list = document.getElementById("profilePostsList");
-    if (!list) return;
-
-    if (userPosts.length === 0) {
-        list.innerHTML = `
-            <div class="no-profile-posts">
-                У пользователя пока нет постов.
-            </div>
-        `;
-        return;
-    }
-
-    list.innerHTML = userPosts
-        .map(post => `
-            <div class="profile-post">
-                <div class="post-meta">
-                    🟠 r/${escapeHTML(post.community)}
-                </div>
-                <h3>${escapeHTML(post.title)}</h3>
-                <p>${escapeHTML(post.text)}</p>
-            </div>
-        `)
-        .join("");
-}
-
-// =====================================================
-// РЕДАКТИРОВАНИЕ ПРОФИЛЯ
-// =====================================================
-
-const editProfileBtn = document.getElementById("editProfileBtn");
-const closeProfileModal = document.getElementById("closeProfileModal");
-const saveProfileBtn = document.getElementById("saveProfileBtn");
-
-let selectedAvatar = "🦁";
-
-if (editProfileBtn) {
-    editProfileBtn.addEventListener("click", () => {
-        if (!requireLogin()) return;
-
-        const profile = getProfile();
-        const nameField = document.getElementById("editName");
-
-        nameField.value = profile.name;
-        nameField.readOnly = true;
-
-        document.getElementById("editBio").value = profile.bio;
-
-        selectedAvatar = profile.avatar;
-
-        document
-            .querySelectorAll("#avatarPicker button")
-            .forEach(button => {
-                button.classList.toggle(
-                    "selected",
-                    button.dataset.avatar === profile.avatar
-                );
-            });
-
-        profileModal.classList.add("show");
-    });
-}
-
-if (closeProfileModal) {
-    closeProfileModal.addEventListener("click", () => {
-        profileModal.classList.remove("show");
-    });
-}
-
-document.querySelectorAll("#avatarPicker button").forEach(button => {
-    button.addEventListener("click", () => {
-        selectedAvatar = button.dataset.avatar;
-
-        document
-            .querySelectorAll("#avatarPicker button")
-            .forEach(item => item.classList.remove("selected"));
-
-        button.classList.add("selected");
-    });
-});
-
-if (saveProfileBtn) {
-    saveProfileBtn.addEventListener("click", async () => {
-        const user = requireLogin();
-        if (!user) return;
-
-        const bio =
-            document.getElementById("editBio").value.trim() ||
-            "Новый пользователь Leomail 🦁";
-
-        saveProfileBtn.disabled = true;
-
-        const res = await api("/api/users/" + encodeURIComponent(user), {
-            method: "PUT",
-            body: { bio: bio, avatar: selectedAvatar }
-        });
-
-        saveProfileBtn.disabled = false;
-
-        if (!res.ok) {
-            alert(res.data.message || "Не удалось сохранить профиль.");
-            return;
-        }
-
-        saveProfile({
-            name: user,
-            bio: res.data.user.bio,
-            avatar: res.data.user.avatar
-        });
-
-        profileModal.classList.remove("show");
-        renderProfile();
-    });
-}
-
-// =====================================================
-// АВТОРИЗАЦИЯ
-// =====================================================
-
-function openLogin() {
-    if (!loginModal) return;
-
-    isRegisterMode = false;
-    updateAuthMode();
-    loginModal.classList.add("show");
-}
-
-function logout() {
-    localStorage.removeItem("leomail_user");
-    localStorage.removeItem("leomail_profile");
-
-    loadUserVotes();
-    updateLoginButton();
-    renderProfile();
-    renderPosts();
-}
-
-if (loginBtn) {
-    loginBtn.addEventListener("click", () => {
-        if (getCurrentUser()) {
-            if (confirm("Выйти из аккаунта " + getCurrentUser() + "?")) {
-                logout();
-            }
-        } else {
-            openLogin();
-        }
-    });
-}
-
-if (closeLogin) {
-    closeLogin.addEventListener("click", () => {
-        loginModal.classList.remove("show");
-    });
-}
-
-if (switchAuth) {
-    switchAuth.addEventListener("click", () => {
-        isRegisterMode = !isRegisterMode;
-        updateAuthMode();
-    });
-}
-
-function updateAuthMode() {
-    if (!authTitle) return;
-
-    const password = document.getElementById("password");
-
-    if (isRegisterMode) {
-        authTitle.textContent = "Регистрация в Leomail";
-        doLogin.textContent = "Зарегистрироваться";
-        switchAuth.textContent = "Уже есть аккаунт? Войти";
-        authInfo.textContent = "Создайте аккаунт Leomail.";
-
-        if (password) {
-            password.placeholder = "Пароль (минимум 6 символов)";
-        }
-    } else {
-        authTitle.textContent = "Войти в Leomail";
-        doLogin.textContent = "Войти";
-        switchAuth.textContent = "Нет аккаунта? Зарегистрироваться";
-        authInfo.textContent = "Войдите в свой аккаунт Leomail.";
-
-        if (password) {
-            password.placeholder = "Пароль";
-        }
-    }
-}
-
-if (doLogin) {
-    doLogin.addEventListener("click", async () => {
-        const usernameInput = document.getElementById("username");
-        const passwordInput = document.getElementById("password");
-
-        const username = usernameInput.value.trim();
-        const password = passwordInput.value;
-
-        if (!username) {
-            alert("Введите имя пользователя.");
-            return;
-        }
-
-        if (!password) {
-            alert("Введите пароль.");
-            return;
-        }
-
-        doLogin.disabled = true;
-        doLogin.textContent = "Подождите...";
-
-        const wasRegister = isRegisterMode;
-
-        const res = await api(
-            wasRegister ? "/api/register" : "/api/login",
-            {
-                method: "POST",
-                body: { username: username, password: password }
-            }
-        );
-
-        doLogin.disabled = false;
-        updateAuthMode();
-
-        if (!res.ok) {
-            alert(res.data.message || "Произошла ошибка.");
-            return;
-        }
-
-        // Регистрация не возвращает вход автоматически — входим сразу
-        let finalUsername = res.data.user.username;
-
-        localStorage.setItem("leomail_user", finalUsername);
-        localStorage.removeItem("leomail_profile");
-
-        loginModal.classList.remove("show");
-        usernameInput.value = "";
-        passwordInput.value = "";
-
-        loadUserVotes();
-        updateLoginButton();
-        renderPosts();
-        renderProfile();
-        syncProfileFromServer();
-
-        alert(
-            wasRegister
-                ? "Регистрация успешна! 🦁"
-                : "Вы вошли в Leomail! 🦁"
-        );
-    });
-}
-
-function updateLoginButton() {
-    if (!loginBtn) return;
-
-    const user = getCurrentUser();
-    loginBtn.textContent = user ? "👤 " + user : "Войти";
-}
-
-// =====================================================
-// ESC И ЗАКРЫТИЕ MODAL ПО ФОНУ
-// =====================================================
-
-document.addEventListener("keydown", event => {
-    if (event.key !== "Escape") return;
-
-    document.querySelectorAll(".modal").forEach(modal => {
-        modal.classList.remove("show");
-    });
-});
-
-document.querySelectorAll(".modal").forEach(modal => {
-    modal.addEventListener("click", event => {
-        if (event.target === modal) {
-            modal.classList.remove("show");
-        }
-    });
-});
-
-// =====================================================
-// ЗАПУСК
-// =====================================================
-
-loadJoined();
-loadUserVotes();
-updateLoginButton();
-updateSortButtons();
-renderPosts();
-
-loadCommunities();
-loadPosts();
-syncProfileFromServer();
-
-// Автообновление: новые посты и комментарии друзей
-setInterval(loadPosts, POLL_INTERVAL);
-setInterval(loadCommunities, COMMUNITY_POLL_INTERVAL);
-
-// Обновить сразу, когда возвращаешься на вкладку или в приложение
-document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) {
-        loadPosts();
-        loadCommunities();
-    }
-});
-
-window.addEventListener("focus", loadPosts);
-
-console.log("Leomail frontend запущен 🦁");
+            deleteComment(button.dataset.post,

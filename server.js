@@ -21,7 +21,7 @@ const pool = new Pool({
         : { rejectUnauthorized: false }
 });
 
-app.use(express.json({ limit: "100kb" }));
+app.use(express.json({ limit: "1mb" }));
 app.use(express.static(__dirname));
 
 function makeId() {
@@ -38,6 +38,46 @@ function sendError(res, error, message) {
     return res.status(500).json({
         success: false,
         message: "Ошибка сервера."
+    });
+}
+
+// =====================================================
+// СЕССИИ (ключ входа)
+// =====================================================
+
+function hashToken(token) {
+    return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+async function createSession(username) {
+    const token = crypto.randomBytes(32).toString("hex");
+
+    await pool.query(
+        "INSERT INTO sessions (token_hash, username) VALUES ($1, $2)",
+        [hashToken(token), username]
+    );
+
+    return token;
+}
+
+async function getAuthUser(req) {
+    const header = req.get("Authorization") || "";
+    const match = header.match(/^Bearer ([a-f0-9]{64})$/);
+
+    if (!match) return null;
+
+    const result = await pool.query(
+        "SELECT username FROM sessions WHERE token_hash = $1",
+        [hashToken(match[1])]
+    );
+
+    return result.rowCount ? result.rows[0].username : null;
+}
+
+function needLogin(res) {
+    return res.status(401).json({
+        success: false,
+        message: "Войдите в аккаунт заново."
     });
 }
 
@@ -78,6 +118,10 @@ async function initializeDatabase() {
         )
     `);
 
+    await pool.query(
+        "ALTER TABLE posts ADD COLUMN IF NOT EXISTS image TEXT"
+    );
+
     await pool.query(`
         CREATE TABLE IF NOT EXISTS comments (
             id TEXT PRIMARY KEY,
@@ -108,6 +152,23 @@ async function initializeDatabase() {
     `);
 
     await pool.query(`
+        CREATE TABLE IF NOT EXISTS sessions (
+            token_hash TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    `);
+
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id BIGSERIAL PRIMARY KEY,
+            author TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    `);
+
+    await pool.query(`
         CREATE INDEX IF NOT EXISTS posts_created_at_idx
         ON posts (created_at DESC)
     `);
@@ -117,23 +178,20 @@ async function initializeDatabase() {
         ON comments (post_id, created_at)
     `);
 
+    // Старые сессии (больше 90 дней) удаляем
+    await pool.query(
+        `DELETE FROM sessions
+         WHERE created_at < NOW() - INTERVAL '90 days'`
+    );
+
     const defaults = [
         [
             "Leomail",
             "Главное сообщество Leomail. Общайтесь, публикуйте посты и находите новых людей."
         ],
-        [
-            "Technology",
-            "Новости технологий, компьютеров и интернета."
-        ],
-        [
-            "Games",
-            "Игры, новости, обзоры и обсуждения."
-        ],
-        [
-            "Funny",
-            "Мемы, юмор и смешные истории."
-        ]
+        ["Technology", "Новости технологий, компьютеров и интернета."],
+        ["Games", "Игры, новости, обзоры и обсуждения."],
+        ["Funny", "Мемы, юмор и смешные истории."]
     ];
 
     for (const [name, description] of defaults) {
@@ -221,10 +279,13 @@ app.post("/api/register", async (req, res) => {
             });
         }
 
+        const token = await createSession(result.rows[0].username);
+
         res.status(201).json({
             success: true,
             message: "Регистрация успешна! 🦁",
-            user: result.rows[0]
+            user: result.rows[0],
+            token
         });
     } catch (error) {
         sendError(res, error, "Ошибка регистрации:");
@@ -262,10 +323,7 @@ app.post("/api/login", async (req, res) => {
         }
 
         const user = result.rows[0];
-        const valid = await bcrypt.compare(
-            password,
-            user.password_hash
-        );
+        const valid = await bcrypt.compare(password, user.password_hash);
 
         if (!valid) {
             return res.status(401).json({
@@ -274,18 +332,19 @@ app.post("/api/login", async (req, res) => {
             });
         }
 
+        const token = await createSession(user.username);
+
         res.json({
             success: true,
             message: "Вход выполнен! 🦁",
-            user: {
-                id: user.id,
-                username: user.username
-            }
+            user: { id: user.id, username: user.username },
+            token
         });
     } catch (error) {
         sendError(res, error, "Ошибка входа:");
     }
 });
+
 // =====================================================
 // ЗАГРУЗКА ПОСТОВ, КОММЕНТАРИЕВ И ГОЛОСОВ
 // =====================================================
@@ -299,6 +358,7 @@ app.get("/api/posts", async (req, res) => {
                 p.body AS text,
                 p.author,
                 p.community,
+                (p.image IS NOT NULL) AS "hasImage",
                 FLOOR(EXTRACT(EPOCH FROM p.created_at) * 1000)
                     AS "createdAt",
                 COALESCE(v.score, 0)::int AS votes,
@@ -337,23 +397,83 @@ app.get("/api/posts", async (req, res) => {
 });
 
 // =====================================================
+// КАРТИНКА ПОСТА
+// =====================================================
+
+app.get("/api/posts/:id/image", async (req, res) => {
+    try {
+        const postId = cleanString(req.params.id, 100);
+
+        const result = await pool.query(
+            "SELECT image FROM posts WHERE id = $1",
+            [postId]
+        );
+
+        const image = result.rowCount ? result.rows[0].image : null;
+
+        if (!image) {
+            return res.status(404).end();
+        }
+
+        const match = image.match(
+            /^data:(image\/(?:jpeg|png|webp|gif));base64,([A-Za-z0-9+/=]+)$/
+        );
+
+        if (!match) {
+            return res.status(404).end();
+        }
+
+        res.set({
+            "Content-Type": match[1],
+            "Cache-Control": "public, max-age=86400",
+            "X-Content-Type-Options": "nosniff"
+        });
+
+        res.send(Buffer.from(match[2], "base64"));
+    } catch (error) {
+        sendError(res, error, "Ошибка картинки:");
+    }
+});
+
+// =====================================================
 // СОЗДАНИЕ ПОСТА
 // =====================================================
 
 app.post("/api/posts", async (req, res) => {
     try {
+        const author = await getAuthUser(req);
+        if (!author) return needLogin(res);
+
         const title = cleanString(req.body?.title, 200);
         const text = cleanString(req.body?.text, 20000);
-        const author = cleanString(req.body?.author, 30);
         const community = cleanString(
             req.body?.community || "Leomail",
             50
         );
 
-        if (!title || !text || !author || !community) {
+        let image = null;
+        const rawImage = req.body?.image;
+
+        if (typeof rawImage === "string" && rawImage) {
+            const valid =
+                rawImage.length <= 900000 &&
+                /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/
+                    .test(rawImage);
+
+            if (!valid) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Картинка не подходит (слишком большая или неверный формат)."
+                });
+            }
+
+            image = rawImage;
+        }
+
+        if (!title || (!text && !image) || !community) {
             return res.status(400).json({
                 success: false,
-                message: "Заполни заголовок, текст, имя и сообщество."
+                message: "Заполни заголовок и текст (или добавь картинку)."
             });
         }
 
@@ -371,13 +491,13 @@ app.post("/api/posts", async (req, res) => {
 
         const result = await pool.query(
             `INSERT INTO posts
-                (id, title, body, author, community)
-             VALUES ($1, $2, $3, $4, $5)
-             RETURNING id, title, body AS text, author,
-                       community,
+                (id, title, body, author, community, image)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             RETURNING id, title, body AS text, author, community,
+                       (image IS NOT NULL) AS "hasImage",
                        FLOOR(EXTRACT(EPOCH FROM created_at) * 1000)
                            AS "createdAt"`,
-            [makeId(), title, text, author, community]
+            [makeId(), title, text, author, community, image]
         );
 
         res.status(201).json({
@@ -394,19 +514,52 @@ app.post("/api/posts", async (req, res) => {
 });
 
 // =====================================================
+// УДАЛЕНИЕ ПОСТА
+// =====================================================
+
+app.delete("/api/posts/:id", async (req, res) => {
+    try {
+        const user = await getAuthUser(req);
+        if (!user) return needLogin(res);
+
+        const postId = cleanString(req.params.id, 100);
+
+        const result = await pool.query(
+            `DELETE FROM posts
+             WHERE id = $1 AND lower(author) = lower($2)
+             RETURNING id`,
+            [postId, user]
+        );
+
+        if (!result.rowCount) {
+            return res.status(403).json({
+                success: false,
+                message: "Можно удалять только свои посты."
+            });
+        }
+
+        res.json({ success: true });
+    } catch (error) {
+        sendError(res, error, "Ошибка удаления поста:");
+    }
+});
+
+// =====================================================
 // ДОБАВЛЕНИЕ КОММЕНТАРИЯ
 // =====================================================
 
 app.post("/api/posts/:id/comments", async (req, res) => {
     try {
+        const author = await getAuthUser(req);
+        if (!author) return needLogin(res);
+
         const postId = cleanString(req.params.id, 100);
-        const author = cleanString(req.body?.author, 30);
         const text = cleanString(req.body?.text, 500);
 
-        if (!author || !text) {
+        if (!text) {
             return res.status(400).json({
                 success: false,
-                message: "Введите имя и комментарий."
+                message: "Введите комментарий."
             });
         }
 
@@ -432,6 +585,43 @@ app.post("/api/posts/:id/comments", async (req, res) => {
         }
 
         sendError(res, error, "Ошибка комментария:");
+    }
+});
+
+// =====================================================
+// УДАЛЕНИЕ КОММЕНТАРИЯ
+// =====================================================
+
+app.delete("/api/posts/:postId/comments/:commentId", async (req, res) => {
+    try {
+        const user = await getAuthUser(req);
+        if (!user) return needLogin(res);
+
+        const postId = cleanString(req.params.postId, 100);
+        const commentId = cleanString(req.params.commentId, 100);
+
+        const result = await pool.query(
+            `DELETE FROM comments c
+             USING posts p
+             WHERE c.id = $1
+               AND c.post_id = $2
+               AND p.id = c.post_id
+               AND (lower(c.author) = lower($3)
+                    OR lower(p.author) = lower($3))
+             RETURNING c.id`,
+            [commentId, postId, user]
+        );
+
+        if (!result.rowCount) {
+            return res.status(403).json({
+                success: false,
+                message: "Нельзя удалить этот комментарий."
+            });
+        }
+
+        res.json({ success: true });
+    } catch (error) {
+        sendError(res, error, "Ошибка удаления комментария:");
     }
 });
 
@@ -502,6 +692,101 @@ app.post("/api/posts/:id/vote", async (req, res) => {
 });
 
 // =====================================================
+// ОБЩИЙ ЧАТ
+// =====================================================
+
+const lastChatTime = new Map();
+
+app.get("/api/chat", async (req, res) => {
+    try {
+        const after = Number(req.query.after) || 0;
+        let result;
+
+        if (after > 0) {
+            result = await pool.query(
+                `SELECT id::int AS id, author, body AS text,
+                        FLOOR(EXTRACT(EPOCH FROM created_at) * 1000)
+                            AS "createdAt"
+                 FROM chat_messages
+                 WHERE id > $1
+                 ORDER BY id
+                 LIMIT 200`,
+                [after]
+            );
+        } else {
+            result = await pool.query(
+                `SELECT * FROM (
+                    SELECT id::int AS id, author, body AS text,
+                           FLOOR(EXTRACT(EPOCH FROM created_at) * 1000)
+                               AS "createdAt"
+                    FROM chat_messages
+                    ORDER BY id DESC
+                    LIMIT 100
+                 ) t ORDER BY id`
+            );
+        }
+
+        res.set("Cache-Control", "no-store");
+        res.json({
+            success: true,
+            messages: result.rows
+        });
+    } catch (error) {
+        sendError(res, error, "Ошибка чата:");
+    }
+});
+
+app.post("/api/chat", async (req, res) => {
+    try {
+        const author = await getAuthUser(req);
+        if (!author) return needLogin(res);
+
+        const text = cleanString(req.body?.text, 500);
+
+        if (!text) {
+            return res.status(400).json({
+                success: false,
+                message: "Введите сообщение."
+            });
+        }
+
+        const key = author.toLowerCase();
+        const now = Date.now();
+
+        if (now - (lastChatTime.get(key) || 0) < 800) {
+            return res.status(429).json({
+                success: false,
+                message: "Не так быстро 🙂"
+            });
+        }
+
+        lastChatTime.set(key, now);
+
+        const result = await pool.query(
+            `INSERT INTO chat_messages (author, body)
+             VALUES ($1, $2)
+             RETURNING id::int AS id, author, body AS text,
+                       FLOOR(EXTRACT(EPOCH FROM created_at) * 1000)
+                           AS "createdAt"`,
+            [author, text]
+        );
+
+        // Храним только последние 1000 сообщений
+        await pool.query(
+            `DELETE FROM chat_messages
+             WHERE id < (SELECT MAX(id) - 1000 FROM chat_messages)`
+        );
+
+        res.status(201).json({
+            success: true,
+            message: result.rows[0]
+        });
+    } catch (error) {
+        sendError(res, error, "Ошибка отправки в чат:");
+    }
+});
+
+// =====================================================
 // СПИСОК СООБЩЕСТВ
 // =====================================================
 
@@ -535,10 +820,7 @@ app.get("/api/communities", async (req, res) => {
 app.post("/api/communities", async (req, res) => {
     try {
         const name = cleanString(req.body?.name, 50);
-        const description = cleanString(
-            req.body?.description || "",
-            500
-        );
+        const description = cleanString(req.body?.description || "", 500);
         const author = cleanString(req.body?.author, 30);
 
         if (
@@ -676,7 +958,18 @@ app.get("/api/users/:username", async (req, res) => {
 
 app.put("/api/users/:username", async (req, res) => {
     try {
+        const authUser = await getAuthUser(req);
+        if (!authUser) return needLogin(res);
+
         const username = cleanString(req.params.username, 30);
+
+        if (authUser.toLowerCase() !== username.toLowerCase()) {
+            return res.status(403).json({
+                success: false,
+                message: "Можно изменять только свой профиль."
+            });
+        }
+
         const bio = cleanString(req.body?.bio || "", 300);
         const avatar = cleanString(req.body?.avatar || "🦁", 20);
 
@@ -709,6 +1002,13 @@ app.put("/api/users/:username", async (req, res) => {
 // =====================================================
 
 app.use((err, req, res, next) => {
+    if (err && err.type === "entity.too.large") {
+        return res.status(413).json({
+            success: false,
+            message: "Слишком большой файл."
+        });
+    }
+
     if (err instanceof SyntaxError && "body" in err) {
         return res.status(400).json({
             success: false,

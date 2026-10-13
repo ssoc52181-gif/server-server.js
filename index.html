@@ -122,6 +122,9 @@
 
 </div>
 
+<!-- Кнопка общего чата -->
+<button class="chat-fab" id="chatFab">💬 Чат</button>
+
 <!-- Окно создания поста -->
 <div class="modal" id="postModal">
     <div class="modal-box">
@@ -136,9 +139,38 @@
         <textarea class="modal-textarea" id="postText" maxlength="10000"
             placeholder="Чем хочешь поделиться?"></textarea>
 
+        <label class="image-picker">
+            <input type="file" id="postImage" accept="image/*" hidden>
+            <span>🖼 Добавить картинку</span>
+        </label>
+
+        <div class="image-preview" id="imagePreviewBox" hidden>
+            <img id="imagePreview" alt="">
+            <button type="button" class="remove-image" id="removeImage"
+                aria-label="Убрать картинку">✕</button>
+        </div>
+
         <div class="modal-bottom">
             <span>🟠 r/Leomail</span>
             <button class="publish" id="publishBtn">Опубликовать</button>
+        </div>
+    </div>
+</div>
+
+<!-- Общий чат -->
+<div class="modal" id="chatModal">
+    <div class="modal-box chat-box">
+        <div class="modal-header">
+            <h2>💬 Общий чат</h2>
+            <button class="close" id="closeChat" aria-label="Закрыть">×</button>
+        </div>
+
+        <div class="chat-messages" id="chatMessages"></div>
+
+        <div class="chat-form">
+            <input class="modal-input" id="chatInput" maxlength="500"
+                placeholder="Написать сообщение...">
+            <button class="publish" id="chatSend">➤</button>
         </div>
     </div>
 </div>
@@ -175,31 +207,4 @@
     <div class="modal-box small">
         <div class="modal-header">
             <h2>Редактировать профиль</h2>
-            <button class="close" id="closeProfileModal" aria-label="Закрыть">×</button>
-        </div>
-
-        <label class="field-label" for="editName">Имя пользователя</label>
-        <input class="modal-input" id="editName" maxlength="30"
-            placeholder="Имя">
-
-        <label class="field-label" for="editBio">О себе</label>
-        <textarea class="modal-textarea" id="editBio" maxlength="300"
-            placeholder="Расскажи о себе"></textarea>
-
-        <label class="field-label">Выбери аватар</label>
-        <div class="avatar-picker" id="avatarPicker">
-            <button type="button" data-avatar="🦁">🦁</button>
-            <button type="button" data-avatar="🐱">🐱</button>
-            <button type="button" data-avatar="🐼">🐼</button>
-            <button type="button" data-avatar="🦊">🦊</button>
-            <button type="button" data-avatar="🐸">🐸</button>
-            <button type="button" data-avatar="🐯">🐯</button>
-        </div>
-
-        <button class="publish full" id="saveProfileBtn">Сохранить профиль</button>
-    </div>
-</div>
-
-<script src="/script.js" defer></script>
-</body>
-</html>
+            <button class="close" id="closeProfileModal"

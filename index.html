@@ -1,210 +1,1048 @@
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1665092472644692"
-     crossorigin="anonymous"></script>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#ff5a1f">
-    <title>Leomail — сообщество</title>
-    <link rel="stylesheet" href="/style.css">
-</head>
-<body>
+"use strict";
 
-<header class="topbar">
-    <a href="/" class="logo" id="homeLogo">
-        <span class="logo-icon">🦁</span>
-        <span>Leomail</span>
-    </a>
+const express = require("express");
+const path = require("path");
+const bcrypt = require("bcryptjs");
+const { Pool } = require("pg");
+const crypto = require("crypto");
 
-    <label class="search">
-        <span>🔎</span>
-        <input id="searchInput" type="search" placeholder="Поиск постов и сообществ...">
-    </label>
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-    <button class="login-btn" id="loginBtn">Войти</button>
-</header>
+if (!process.env.DATABASE_URL) {
+    console.error("ОШИБКА: настрой DATABASE_URL в Render.");
+    process.exit(1);
+}
 
-<div class="layout">
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.DATABASE_SSL === "false"
+        ? false
+        : { rejectUnauthorized: false }
+});
 
-    <aside class="sidebar">
-        <button class="side-item active" id="homeMenu">🏠 Главная</button>
-        <button class="side-item" id="hotMenu">🔥 Популярное</button>
-        <button class="side-item" id="newMenu">🆕 Новое</button>
+app.use(express.json({ limit: "1mb" }));
+app.use(express.static(__dirname));
 
-        <div class="sidebar-title">СООБЩЕСТВА</div>
+function makeId() {
+    return crypto.randomUUID();
+}
 
-        <button class="side-item" data-community="Leomail"
-            onclick="openCommunity('Leomail')">🟠 r/Leomail</button>
-        <button class="side-item" data-community="Technology"
-            onclick="openCommunity('Technology')">💻 r/Technology</button>
-        <button class="side-item" data-community="Games"
-            onclick="openCommunity('Games')">🎮 r/Games</button>
-        <button class="side-item" data-community="Funny"
-            onclick="openCommunity('Funny')">😂 r/Funny</button>
+function cleanString(value, maxLength) {
+    if (typeof value !== "string") return "";
+    return value.trim().slice(0, maxLength);
+}
 
-        <button class="create-community" id="communityBtn">＋ Создать сообщество</button>
-        <button class="side-item profile-menu" id="profileMenu">👤 Мой профиль</button>
-    </aside>
+function sendError(res, error, message) {
+    console.error(message, error);
+    return res.status(500).json({
+        success: false,
+        message: "Ошибка сервера."
+    });
+}
 
-    <main class="content">
-        <section id="homePage">
-            <div class="page-heading">
-                <div>
-                    <h1>Добро пожаловать в Leomail 🦁</h1>
-                    <p>Общайся, делись идеями и находи единомышленников.</p>
-                </div>
-                <button class="new-post" id="newPostBtn">＋ Создать пост</button>
-            </div>
+// =====================================================
+// СЕССИИ (ключ входа)
+// =====================================================
 
-            <div class="sort-bar">
-                <button class="sort active" data-sort="hot">🔥 Популярное</button>
-                <button class="sort" data-sort="new">🆕 Новое</button>
-                <button class="sort" data-sort="top">⬆ Лучшее</button>
-            </div>
+function hashToken(token) {
+    return crypto.createHash("sha256").update(token).digest("hex");
+}
 
-            <div id="posts"></div>
-        </section>
+async function createSession(username) {
+    const token = crypto.randomBytes(32).toString("hex");
 
-        <section id="profilePage" class="profile-page">
-            <div class="profile-cover"></div>
+    await pool.query(
+        "INSERT INTO sessions (token_hash, username) VALUES ($1, $2)",
+        [hashToken(token), username]
+    );
 
-            <div class="profile-main">
-                <div class="profile-avatar" id="profileAvatar">🦁</div>
-                <div class="profile-info">
-                    <h1 id="profileName">Guest</h1>
-                    <p id="profileUsername">u/Guest</p>
-                    <p id="profileBio">Новый пользователь Leomail 🦁</p>
-                </div>
-                <button class="edit-profile" id="editProfileBtn">✏️ Изменить профиль</button>
-            </div>
+    return token;
+}
 
-            <div class="profile-stats">
-                <div><strong id="profileKarma">0</strong><span>Карма</span></div>
-                <div><strong id="profilePosts">0</strong><span>Посты</span></div>
-                <div><strong id="profileComments">0</strong><span>Комментарии</span></div>
-            </div>
+async function getAuthUser(req) {
+    const header = req.get("Authorization") || "";
+    const match = header.match(/^Bearer ([a-f0-9]{64})$/);
 
-            <div class="profile-content">
-                <h2>Мои публикации</h2>
-                <div id="profilePostsList"></div>
-            </div>
-        </section>
-    </main>
+    if (!match) return null;
 
-    <aside class="rightbar">
-        <div class="community-card">
-            <div class="community-cover"></div>
-            <div class="community-content">
-                <div class="big-logo">🦁</div>
-                <h2>r/Leomail</h2>
-                <p>Главное сообщество Leomail. Общайтесь, публикуйте посты и находите новых людей.</p>
+    const result = await pool.query(
+        "SELECT username FROM sessions WHERE token_hash = $1",
+        [hashToken(match[1])]
+    );
 
-                <div class="members">
-                    <strong id="memberCount">1 248</strong>
-                    <span>участников</span>
-                </div>
+    return result.rowCount ? result.rows[0].username : null;
+}
 
-                <button class="join-btn" id="joinBtn">Присоединиться</button>
-            </div>
-        </div>
+function needLogin(res) {
+    return res.status(401).json({
+        success: false,
+        message: "Войдите в аккаунт заново."
+    });
+}
 
-        <div class="rules">
-            <h3>📌 Правила сообщества</h3>
-            <ol>
-                <li>Уважайте других пользователей.</li>
-                <li>Не публикуйте спам.</li>
-                <li>Будьте дружелюбны.</li>
-                <li>Публикуйте материалы по теме.</li>
-            </ol>
-        </div>
-    </aside>
+// =====================================================
+// ИНИЦИАЛИЗАЦИЯ БАЗЫ
+// =====================================================
 
-</div>
+async function initializeDatabase() {
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            username_lower TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            bio TEXT NOT NULL DEFAULT 'Новый пользователь Leomail 🦁',
+            avatar TEXT NOT NULL DEFAULT '🦁',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    `);
 
-<!-- Кнопка общего чата -->
-<button class="chat-fab" id="chatFab">💬 Чат</button>
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS communities (
+            name TEXT PRIMARY KEY,
+            description TEXT NOT NULL DEFAULT '',
+            created_by TEXT NOT NULL DEFAULT 'LeoAdmin',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    `);
 
-<!-- Окно создания поста -->
-<div class="modal" id="postModal">
-    <div class="modal-box">
-        <div class="modal-header">
-            <h2>Создать публикацию</h2>
-            <button class="close" id="closeModal" aria-label="Закрыть">×</button>
-        </div>
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS posts (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            author TEXT NOT NULL,
+            community TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    `);
 
-        <input class="modal-input" id="postTitle" maxlength="200"
-            placeholder="Заголовок поста">
+    await pool.query(
+        "ALTER TABLE posts ADD COLUMN IF NOT EXISTS image TEXT"
+    );
 
-        <textarea class="modal-textarea" id="postText" maxlength="10000"
-            placeholder="Чем хочешь поделиться?"></textarea>
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS comments (
+            id TEXT PRIMARY KEY,
+            post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+            author TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    `);
 
-        <label class="image-picker">
-            <input type="file" id="postImage" accept="image/*" hidden>
-            <span>🖼 Добавить картинку</span>
-        </label>
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS votes (
+            post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+            voter TEXT NOT NULL,
+            value INTEGER NOT NULL CHECK (value IN (-1, 1)),
+            PRIMARY KEY (post_id, voter)
+        )
+    `);
 
-        <div class="image-preview" id="imagePreviewBox" hidden>
-            <img id="imagePreview" alt="">
-            <button type="button" class="remove-image" id="removeImage"
-                aria-label="Убрать картинку">✕</button>
-        </div>
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS community_members (
+            community_name TEXT NOT NULL
+                REFERENCES communities(name) ON DELETE CASCADE,
+            username TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (community_name, username)
+        )
+    `);
 
-        <div class="modal-bottom">
-            <span>🟠 r/Leomail</span>
-            <button class="publish" id="publishBtn">Опубликовать</button>
-        </div>
-    </div>
-</div>
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS sessions (
+            token_hash TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    `);
 
-<!-- Общий чат -->
-<div class="modal" id="chatModal">
-    <div class="modal-box chat-box">
-        <div class="modal-header">
-            <h2>💬 Общий чат</h2>
-            <button class="close" id="closeChat" aria-label="Закрыть">×</button>
-        </div>
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id BIGSERIAL PRIMARY KEY,
+            author TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    `);
 
-        <div class="chat-messages" id="chatMessages"></div>
+    await pool.query(`
+        CREATE INDEX IF NOT EXISTS posts_created_at_idx
+        ON posts (created_at DESC)
+    `);
 
-        <div class="chat-form">
-            <input class="modal-input" id="chatInput" maxlength="500"
-                placeholder="Написать сообщение...">
-            <button class="publish" id="chatSend">➤</button>
-        </div>
-    </div>
-</div>
+    await pool.query(`
+        CREATE INDEX IF NOT EXISTS comments_post_id_idx
+        ON comments (post_id, created_at)
+    `);
 
-<!-- Вход и регистрация -->
-<div class="modal" id="loginModal">
-    <div class="modal-box small">
-        <div class="modal-header">
-            <h2 id="authTitle">Войти в Leomail</h2>
-            <button class="close" id="closeLogin" aria-label="Закрыть">×</button>
-        </div>
+    // Старые сессии (больше 90 дней) удаляем
+    await pool.query(
+        `DELETE FROM sessions
+         WHERE created_at < NOW() - INTERVAL '90 days'`
+    );
 
-        <label class="field-label" for="username">Имя пользователя</label>
-        <input class="modal-input" id="username" maxlength="30"
-            autocomplete="username" placeholder="Твоё имя">
+    const defaults = [
+        [
+            "Leomail",
+            "Главное сообщество Leomail. Общайтесь, публикуйте посты и находите новых людей."
+        ],
+        ["Technology", "Новости технологий, компьютеров и интернета."],
+        ["Games", "Игры, новости, обзоры и обсуждения."],
+        ["Funny", "Мемы, юмор и смешные истории."]
+    ];
 
-        <label class="field-label" for="password">Пароль</label>
-        <input class="modal-input" id="password" type="password"
-            autocomplete="current-password" placeholder="Пароль">
+    for (const [name, description] of defaults) {
+        await pool.query(
+            `INSERT INTO communities (name, description)
+             VALUES ($1, $2)
+             ON CONFLICT (name) DO NOTHING`,
+            [name, description]
+        );
+    }
 
-        <button class="publish full" id="doLogin">Войти</button>
-        <button class="post-action" id="switchAuth" style="width:100%">
-            Нет аккаунта? Зарегистрироваться
-        </button>
+    console.log("База данных Leomail готова.");
+}
 
-        <p class="login-info" id="authInfo">
-            Войди или создай аккаунт Leomail.
-        </p>
-    </div>
-</div>
+// =====================================================
+// ГЛАВНАЯ И СТАТУС
+// =====================================================
 
-<!-- Редактирование профиля -->
-<div class="modal" id="profileModal">
-    <div class="modal-box small">
-        <div class="modal-header">
-            <h2>Редактировать профиль</h2>
-            <button class="close" id="closeProfileModal"
+app.get("/", (req, res) => {
+    res.sendFile(path.join(__dirname, "index.html"));
+});
+
+app.get("/api/status", async (req, res) => {
+    try {
+        await pool.query("SELECT 1");
+        res.json({
+            success: true,
+            message: "Leomail server работает! 🦁"
+        });
+    } catch (error) {
+        sendError(res, error, "Ошибка проверки сервера:");
+    }
+});
+
+// =====================================================
+// РЕГИСТРАЦИЯ
+// =====================================================
+
+app.post("/api/register", async (req, res) => {
+    try {
+        const username = cleanString(req.body?.username, 30);
+        const password = req.body?.password;
+
+        if (username.length < 3) {
+            return res.status(400).json({
+                success: false,
+                message: "Имя должно содержать от 3 до 30 символов."
+            });
+        }
+
+        if (!/^[a-zA-Zа-яА-ЯёЁ0-9_]+$/.test(username)) {
+            return res.status(400).json({
+                success: false,
+                message: "Имя может содержать только буквы, цифры и _."
+            });
+        }
+
+        if (
+            typeof password !== "string" ||
+            password.length < 6 ||
+            password.length > 200
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: "Пароль должен содержать от 6 до 200 символов."
+            });
+        }
+
+        const hash = await bcrypt.hash(password, 10);
+        const id = makeId();
+
+        const result = await pool.query(
+            `INSERT INTO users
+                (id, username, username_lower, password_hash)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (username_lower) DO NOTHING
+             RETURNING id, username`,
+            [id, username, username.toLowerCase(), hash]
+        );
+
+        if (!result.rowCount) {
+            return res.status(409).json({
+                success: false,
+                message: "Такой пользователь уже существует."
+            });
+        }
+
+        const token = await createSession(result.rows[0].username);
+
+        res.status(201).json({
+            success: true,
+            message: "Регистрация успешна! 🦁",
+            user: result.rows[0],
+            token
+        });
+    } catch (error) {
+        sendError(res, error, "Ошибка регистрации:");
+    }
+});
+
+// =====================================================
+// ВХОД
+// =====================================================
+
+app.post("/api/login", async (req, res) => {
+    try {
+        const username = cleanString(req.body?.username, 30);
+        const password = req.body?.password;
+
+        if (!username || typeof password !== "string") {
+            return res.status(400).json({
+                success: false,
+                message: "Введите имя пользователя и пароль."
+            });
+        }
+
+        const result = await pool.query(
+            `SELECT id, username, password_hash
+             FROM users
+             WHERE username_lower = $1`,
+            [username.toLowerCase()]
+        );
+
+        if (!result.rowCount) {
+            return res.status(401).json({
+                success: false,
+                message: "Неверное имя пользователя или пароль."
+            });
+        }
+
+        const user = result.rows[0];
+        const valid = await bcrypt.compare(password, user.password_hash);
+
+        if (!valid) {
+            return res.status(401).json({
+                success: false,
+                message: "Неверное имя пользователя или пароль."
+            });
+        }
+
+        const token = await createSession(user.username);
+
+        res.json({
+            success: true,
+            message: "Вход выполнен! 🦁",
+            user: { id: user.id, username: user.username },
+            token
+        });
+    } catch (error) {
+        sendError(res, error, "Ошибка входа:");
+    }
+});
+
+// =====================================================
+// ЗАГРУЗКА ПОСТОВ, КОММЕНТАРИЕВ И ГОЛОСОВ
+// =====================================================
+
+app.get("/api/posts", async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT
+                p.id,
+                p.title,
+                p.body AS text,
+                p.author,
+                p.community,
+                (p.image IS NOT NULL) AS "hasImage",
+                FLOOR(EXTRACT(EPOCH FROM p.created_at) * 1000)
+                    AS "createdAt",
+                COALESCE(v.score, 0)::int AS votes,
+                COALESCE(c.items, '[]'::json)::json AS comments
+            FROM posts p
+            LEFT JOIN (
+                SELECT post_id, SUM(value)::int AS score
+                FROM votes
+                GROUP BY post_id
+            ) v ON v.post_id = p.id
+            LEFT JOIN (
+                SELECT post_id, json_agg(
+                    json_build_object(
+                        'id', id,
+                        'author', author,
+                        'text', body,
+                        'createdAt',
+                        FLOOR(EXTRACT(EPOCH FROM created_at) * 1000)
+                    ) ORDER BY created_at
+                ) AS items
+                FROM comments
+                GROUP BY post_id
+            ) c ON c.post_id = p.id
+            ORDER BY p.created_at DESC
+            LIMIT 500
+        `);
+
+        res.set("Cache-Control", "no-store");
+        res.json({
+            success: true,
+            posts: result.rows
+        });
+    } catch (error) {
+        sendError(res, error, "Ошибка загрузки постов:");
+    }
+});
+
+// =====================================================
+// КАРТИНКА ПОСТА
+// =====================================================
+
+app.get("/api/posts/:id/image", async (req, res) => {
+    try {
+        const postId = cleanString(req.params.id, 100);
+
+        const result = await pool.query(
+            "SELECT image FROM posts WHERE id = $1",
+            [postId]
+        );
+
+        const image = result.rowCount ? result.rows[0].image : null;
+
+        if (!image) {
+            return res.status(404).end();
+        }
+
+        const match = image.match(
+            /^data:(image\/(?:jpeg|png|webp|gif));base64,([A-Za-z0-9+/=]+)$/
+        );
+
+        if (!match) {
+            return res.status(404).end();
+        }
+
+        res.set({
+            "Content-Type": match[1],
+            "Cache-Control": "public, max-age=86400",
+            "X-Content-Type-Options": "nosniff"
+        });
+
+        res.send(Buffer.from(match[2], "base64"));
+    } catch (error) {
+        sendError(res, error, "Ошибка картинки:");
+    }
+});
+
+// =====================================================
+// СОЗДАНИЕ ПОСТА
+// =====================================================
+
+app.post("/api/posts", async (req, res) => {
+    try {
+        const author = await getAuthUser(req);
+        if (!author) return needLogin(res);
+
+        const title = cleanString(req.body?.title, 200);
+        const text = cleanString(req.body?.text, 20000);
+        const community = cleanString(
+            req.body?.community || "Leomail",
+            50
+        );
+
+        let image = null;
+        const rawImage = req.body?.image;
+
+        if (typeof rawImage === "string" && rawImage) {
+            const valid =
+                rawImage.length <= 900000 &&
+                /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/
+                    .test(rawImage);
+
+            if (!valid) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Картинка не подходит (слишком большая или неверный формат)."
+                });
+            }
+
+            image = rawImage;
+        }
+
+        if (!title || (!text && !image) || !community) {
+            return res.status(400).json({
+                success: false,
+                message: "Заполни заголовок и текст (или добавь картинку)."
+            });
+        }
+
+        const exists = await pool.query(
+            "SELECT name FROM communities WHERE name = $1",
+            [community]
+        );
+
+        if (!exists.rowCount) {
+            return res.status(400).json({
+                success: false,
+                message: "Такого сообщества не существует."
+            });
+        }
+
+        const result = await pool.query(
+            `INSERT INTO posts
+                (id, title, body, author, community, image)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             RETURNING id, title, body AS text, author, community,
+                       (image IS NOT NULL) AS "hasImage",
+                       FLOOR(EXTRACT(EPOCH FROM created_at) * 1000)
+                           AS "createdAt"`,
+            [makeId(), title, text, author, community, image]
+        );
+
+        res.status(201).json({
+            success: true,
+            post: {
+                ...result.rows[0],
+                votes: 0,
+                comments: []
+            }
+        });
+    } catch (error) {
+        sendError(res, error, "Ошибка создания поста:");
+    }
+});
+
+// =====================================================
+// УДАЛЕНИЕ ПОСТА
+// =====================================================
+
+app.delete("/api/posts/:id", async (req, res) => {
+    try {
+        const user = await getAuthUser(req);
+        if (!user) return needLogin(res);
+
+        const postId = cleanString(req.params.id, 100);
+
+        const result = await pool.query(
+            `DELETE FROM posts
+             WHERE id = $1 AND lower(author) = lower($2)
+             RETURNING id`,
+            [postId, user]
+        );
+
+        if (!result.rowCount) {
+            return res.status(403).json({
+                success: false,
+                message: "Можно удалять только свои посты."
+            });
+        }
+
+        res.json({ success: true });
+    } catch (error) {
+        sendError(res, error, "Ошибка удаления поста:");
+    }
+});
+
+// =====================================================
+// ДОБАВЛЕНИЕ КОММЕНТАРИЯ
+// =====================================================
+
+app.post("/api/posts/:id/comments", async (req, res) => {
+    try {
+        const author = await getAuthUser(req);
+        if (!author) return needLogin(res);
+
+        const postId = cleanString(req.params.id, 100);
+        const text = cleanString(req.body?.text, 500);
+
+        if (!text) {
+            return res.status(400).json({
+                success: false,
+                message: "Введите комментарий."
+            });
+        }
+
+        const result = await pool.query(
+            `INSERT INTO comments (id, post_id, author, body)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id, author, body AS text,
+                       FLOOR(EXTRACT(EPOCH FROM created_at) * 1000)
+                           AS "createdAt"`,
+            [makeId(), postId, author, text]
+        );
+
+        res.status(201).json({
+            success: true,
+            comment: result.rows[0]
+        });
+    } catch (error) {
+        if (error.code === "23503") {
+            return res.status(404).json({
+                success: false,
+                message: "Пост не найден."
+            });
+        }
+
+        sendError(res, error, "Ошибка комментария:");
+    }
+});
+
+// =====================================================
+// УДАЛЕНИЕ КОММЕНТАРИЯ
+// =====================================================
+
+app.delete("/api/posts/:postId/comments/:commentId", async (req, res) => {
+    try {
+        const user = await getAuthUser(req);
+        if (!user) return needLogin(res);
+
+        const postId = cleanString(req.params.postId, 100);
+        const commentId = cleanString(req.params.commentId, 100);
+
+        const result = await pool.query(
+            `DELETE FROM comments c
+             USING posts p
+             WHERE c.id = $1
+               AND c.post_id = $2
+               AND p.id = c.post_id
+               AND (lower(c.author) = lower($3)
+                    OR lower(p.author) = lower($3))
+             RETURNING c.id`,
+            [commentId, postId, user]
+        );
+
+        if (!result.rowCount) {
+            return res.status(403).json({
+                success: false,
+                message: "Нельзя удалить этот комментарий."
+            });
+        }
+
+        res.json({ success: true });
+    } catch (error) {
+        sendError(res, error, "Ошибка удаления комментария:");
+    }
+});
+
+// =====================================================
+// ГОЛОСОВАНИЕ
+// =====================================================
+
+app.post("/api/posts/:id/vote", async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+        const postId = cleanString(req.params.id, 100);
+        const username = cleanString(req.body?.username, 30);
+        const value = Number(req.body?.value);
+
+        if (!username || ![-1, 0, 1].includes(value)) {
+            return res.status(400).json({
+                success: false,
+                message: "Некорректный голос."
+            });
+        }
+
+        await client.query("BEGIN");
+
+        if (value === 0) {
+            await client.query(
+                `DELETE FROM votes
+                 WHERE post_id = $1 AND voter = $2`,
+                [postId, username.toLowerCase()]
+            );
+        } else {
+            await client.query(
+                `INSERT INTO votes (post_id, voter, value)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (post_id, voter)
+                 DO UPDATE SET value = EXCLUDED.value`,
+                [postId, username.toLowerCase(), value]
+            );
+        }
+
+        const result = await client.query(
+            `SELECT COALESCE(SUM(value), 0)::int AS votes
+             FROM votes
+             WHERE post_id = $1`,
+            [postId]
+        );
+
+        await client.query("COMMIT");
+
+        res.json({
+            success: true,
+            votes: result.rows[0].votes
+        });
+    } catch (error) {
+        await client.query("ROLLBACK");
+
+        if (error.code === "23503") {
+            return res.status(404).json({
+                success: false,
+                message: "Пост не найден."
+            });
+        }
+
+        sendError(res, error, "Ошибка голосования:");
+    } finally {
+        client.release();
+    }
+});
+
+// =====================================================
+// ОБЩИЙ ЧАТ
+// =====================================================
+
+const lastChatTime = new Map();
+
+app.get("/api/chat", async (req, res) => {
+    try {
+        const after = Number(req.query.after) || 0;
+        let result;
+
+        if (after > 0) {
+            result = await pool.query(
+                `SELECT id::int AS id, author, body AS text,
+                        FLOOR(EXTRACT(EPOCH FROM created_at) * 1000)
+                            AS "createdAt"
+                 FROM chat_messages
+                 WHERE id > $1
+                 ORDER BY id
+                 LIMIT 200`,
+                [after]
+            );
+        } else {
+            result = await pool.query(
+                `SELECT * FROM (
+                    SELECT id::int AS id, author, body AS text,
+                           FLOOR(EXTRACT(EPOCH FROM created_at) * 1000)
+                               AS "createdAt"
+                    FROM chat_messages
+                    ORDER BY id DESC
+                    LIMIT 100
+                 ) t ORDER BY id`
+            );
+        }
+
+        res.set("Cache-Control", "no-store");
+        res.json({
+            success: true,
+            messages: result.rows
+        });
+    } catch (error) {
+        sendError(res, error, "Ошибка чата:");
+    }
+});
+
+app.post("/api/chat", async (req, res) => {
+    try {
+        const author = await getAuthUser(req);
+        if (!author) return needLogin(res);
+
+        const text = cleanString(req.body?.text, 500);
+
+        if (!text) {
+            return res.status(400).json({
+                success: false,
+                message: "Введите сообщение."
+            });
+        }
+
+        const key = author.toLowerCase();
+        const now = Date.now();
+
+        if (now - (lastChatTime.get(key) || 0) < 800) {
+            return res.status(429).json({
+                success: false,
+                message: "Не так быстро 🙂"
+            });
+        }
+
+        lastChatTime.set(key, now);
+
+        const result = await pool.query(
+            `INSERT INTO chat_messages (author, body)
+             VALUES ($1, $2)
+             RETURNING id::int AS id, author, body AS text,
+                       FLOOR(EXTRACT(EPOCH FROM created_at) * 1000)
+                           AS "createdAt"`,
+            [author, text]
+        );
+
+        // Храним только последние 1000 сообщений
+        await pool.query(
+            `DELETE FROM chat_messages
+             WHERE id < (SELECT MAX(id) - 1000 FROM chat_messages)`
+        );
+
+        res.status(201).json({
+            success: true,
+            message: result.rows[0]
+        });
+    } catch (error) {
+        sendError(res, error, "Ошибка отправки в чат:");
+    }
+});
+
+// =====================================================
+// СПИСОК СООБЩЕСТВ
+// =====================================================
+
+app.get("/api/communities", async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT
+                c.name,
+                c.description,
+                COUNT(m.username)::int AS members
+            FROM communities c
+            LEFT JOIN community_members m
+                ON m.community_name = c.name
+            GROUP BY c.name, c.description
+            ORDER BY c.created_at
+        `);
+
+        res.json({
+            success: true,
+            communities: result.rows
+        });
+    } catch (error) {
+        sendError(res, error, "Ошибка сообществ:");
+    }
+});
+
+// =====================================================
+// СОЗДАНИЕ СООБЩЕСТВА
+// =====================================================
+
+app.post("/api/communities", async (req, res) => {
+    try {
+        const name = cleanString(req.body?.name, 50);
+        const description = cleanString(req.body?.description || "", 500);
+        const author = cleanString(req.body?.author, 30);
+
+        if (
+            name.length < 3 ||
+            !/^[a-zA-Zа-яА-ЯёЁ0-9_-]+$/.test(name)
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: "Название сообщества некорректно."
+            });
+        }
+
+        if (!author) {
+            return res.status(400).json({
+                success: false,
+                message: "Не указано имя создателя."
+            });
+        }
+
+        const result = await pool.query(
+            `INSERT INTO communities (name, description, created_by)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (name) DO NOTHING
+             RETURNING name, description`,
+            [name, description, author]
+        );
+
+        if (!result.rowCount) {
+            return res.status(409).json({
+                success: false,
+                message: "Такое сообщество уже существует."
+            });
+        }
+
+        await pool.query(
+            `INSERT INTO community_members (community_name, username)
+             VALUES ($1, $2)
+             ON CONFLICT DO NOTHING`,
+            [name, author.toLowerCase()]
+        );
+
+        res.status(201).json({
+            success: true,
+            community: {
+                ...result.rows[0],
+                members: 1,
+                joined: true
+            }
+        });
+    } catch (error) {
+        sendError(res, error, "Ошибка создания сообщества:");
+    }
+});
+
+// =====================================================
+// ВСТУПЛЕНИЕ И ВЫХОД ИЗ СООБЩЕСТВА
+// =====================================================
+
+app.post("/api/communities/:name/join", async (req, res) => {
+    try {
+        const name = cleanString(req.params.name, 50);
+        const username = cleanString(req.body?.username, 30);
+        const joined = req.body?.joined === true;
+
+        if (!username) {
+            return res.status(400).json({
+                success: false,
+                message: "Укажи имя пользователя."
+            });
+        }
+
+        if (joined) {
+            await pool.query(
+                `INSERT INTO community_members
+                    (community_name, username)
+                 VALUES ($1, $2)
+                 ON CONFLICT DO NOTHING`,
+                [name, username.toLowerCase()]
+            );
+        } else {
+            await pool.query(
+                `DELETE FROM community_members
+                 WHERE community_name = $1 AND username = $2`,
+                [name, username.toLowerCase()]
+            );
+        }
+
+        const result = await pool.query(
+            `SELECT COUNT(*)::int AS members
+             FROM community_members
+             WHERE community_name = $1`,
+            [name]
+        );
+
+        res.json({
+            success: true,
+            joined,
+            members: result.rows[0].members
+        });
+    } catch (error) {
+        sendError(res, error, "Ошибка участия в сообществе:");
+    }
+});
+
+// =====================================================
+// ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ
+// =====================================================
+
+app.get("/api/users/:username", async (req, res) => {
+    try {
+        const username = cleanString(req.params.username, 30);
+
+        const result = await pool.query(
+            `SELECT username, bio, avatar
+             FROM users
+             WHERE username_lower = $1`,
+            [username.toLowerCase()]
+        );
+
+        if (!result.rowCount) {
+            return res.status(404).json({
+                success: false,
+                message: "Пользователь не найден."
+            });
+        }
+
+        res.json({
+            success: true,
+            user: result.rows[0]
+        });
+    } catch (error) {
+        sendError(res, error, "Ошибка загрузки профиля:");
+    }
+});
+
+app.put("/api/users/:username", async (req, res) => {
+    try {
+        const authUser = await getAuthUser(req);
+        if (!authUser) return needLogin(res);
+
+        const username = cleanString(req.params.username, 30);
+
+        if (authUser.toLowerCase() !== username.toLowerCase()) {
+            return res.status(403).json({
+                success: false,
+                message: "Можно изменять только свой профиль."
+            });
+        }
+
+        const bio = cleanString(req.body?.bio || "", 300);
+        const avatar = cleanString(req.body?.avatar || "🦁", 20);
+
+        const result = await pool.query(
+            `UPDATE users
+             SET bio = $2, avatar = $3
+             WHERE username_lower = $1
+             RETURNING username, bio, avatar`,
+            [username.toLowerCase(), bio, avatar]
+        );
+
+        if (!result.rowCount) {
+            return res.status(404).json({
+                success: false,
+                message: "Пользователь не найден."
+            });
+        }
+
+        res.json({
+            success: true,
+            user: result.rows[0]
+        });
+    } catch (error) {
+        sendError(res, error, "Ошибка сохранения профиля:");
+    }
+});
+
+// =====================================================
+// ОБРАБОТКА ОШИБОК
+// =====================================================
+
+app.use((err, req, res, next) => {
+    if (err && err.type === "entity.too.large") {
+        return res.status(413).json({
+            success: false,
+            message: "Слишком большой файл."
+        });
+    }
+
+    if (err instanceof SyntaxError && "body" in err) {
+        return res.status(400).json({
+            success: false,
+            message: "Некорректный JSON."
+        });
+    }
+
+    sendError(res, err, "Необработанная ошибка:");
+});
+
+// =====================================================
+// ЗАПУСК СЕРВЕРА
+// =====================================================
+
+async function startServer() {
+    try {
+        await initializeDatabase();
+
+        app.listen(PORT, "0.0.0.0", () => {
+            console.log("=================================");
+            console.log("       LEOMAIL SERVER 🦁");
+            console.log("=================================");
+            console.log("Порт:", PORT);
+            console.log("Сервер запущен!");
+        });
+    } catch (error) {
+        console.error("Не удалось запустить сервер:", error);
+        process.exit(1);
+    }
+}
+
+process.on("SIGTERM", async () => {
+    await pool.end();
+    process.exit(0);
+});
+
+startServer();
